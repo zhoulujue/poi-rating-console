@@ -35,7 +35,7 @@ const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
   : "https://demandapi.booking.com/3.1";
-const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const CHROME_EXECUTABLE = process.env.CHROME_EXECUTABLE || "";
 const yelpClient = yelpApiKey ? yelp.client(yelpApiKey) : null;
 
 const MIME_TYPES = {
@@ -185,11 +185,13 @@ async function handleAssistRating(req, res, url) {
 
   let browser;
   try {
-    browser = await chromium.launch({
+    const launchOptions = {
       headless: true,
-      executablePath: CHROME_EXECUTABLE,
       args: ["--disable-blink-features=AutomationControlled"],
-    });
+    };
+    if (CHROME_EXECUTABLE) launchOptions.executablePath = CHROME_EXECUTABLE;
+
+    browser = await chromium.launch(launchOptions);
     const page = await browser.newPage({
       locale: "en-US",
       userAgent:
