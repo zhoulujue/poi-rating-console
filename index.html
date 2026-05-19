@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>POI 评分汇总</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">POI Rating Console</p>
+            <h1>多平台评分查询</h1>
+          </div>
+          <div class="status-stack" aria-label="数据源状态">
+            <div class="freshness" id="googleStatus">
+              <span class="status-dot"></span>
+              正在准备 Google Places
+            </div>
+            <div class="freshness" id="tripAdvisorStatus">
+              <span class="status-dot"></span>
+              TripAdvisor 待搜索
+            </div>
+            <div class="freshness" id="bookingStatus">
+              <span class="status-dot"></span>
+              Booking 待搜索
+            </div>
+            <div class="freshness" id="yelpStatus">
+              <span class="status-dot"></span>
+              Yelp 待搜索
+            </div>
+            <div class="freshness" id="geminiStatus">
+              <span class="status-dot"></span>
+              Gemini Search 待搜索
+            </div>
+            <div class="freshness" id="braveStatus">
+              <span class="status-dot"></span>
+              Brave Search 待搜索
+            </div>
+            <div class="freshness" id="tavilyStatus">
+              <span class="status-dot"></span>
+              Tavily Search 待搜索
+            </div>
+          </div>
+        </header>
+
+        <section class="search-panel" aria-label="POI 搜索">
+          <div class="runtime-notice" id="runtimeNotice" hidden>
+            TripAdvisor 和 Booking 需要通过本地代理访问。请运行 node server.js 后打开 http://127.0.0.1:4173。
+          </div>
+          <div class="search-row">
+            <label class="search-field">
+              <span>搜索名称</span>
+              <input
+                id="searchInput"
+                type="search"
+                placeholder="输入餐厅或酒店名称，例如 Jardin Bleu"
+                autocomplete="off"
+              />
+            </label>
+            <div class="type-switch" role="tablist" aria-label="POI 类型">
+              <button class="type-tab is-active" data-type="all" role="tab" aria-selected="true">全部</button>
+              <button class="type-tab" data-type="restaurant" role="tab" aria-selected="false">餐厅</button>
+              <button class="type-tab" data-type="hotel" role="tab" aria-selected="false">酒店</button>
+            </div>
+          </div>
+          <div class="quick-filters" aria-label="快捷搜索">
+            <button data-query="上海">上海</button>
+            <button data-query="Tokyo">Tokyo</button>
+            <button data-query="米其林">米其林</button>
+            <button data-query="Booking">Booking</button>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <aside class="results-panel" aria-label="搜索结果">
+            <div class="panel-heading">
+              <h2>搜索结果</h2>
+              <span id="resultCount"></span>
+            </div>
+            <div id="poiList" class="poi-list"></div>
+          </aside>
+
+          <section class="detail-panel" aria-live="polite">
+            <div id="detailView"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <template id="emptyTemplate">
+      <div class="empty-state">
+        <div class="empty-visual" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <h2>没有找到匹配的 POI</h2>
+        <p>试试切换类型，或搜索城市、平台名称、菜系、酒店品牌。</p>
+      </div>
+    </template>
+
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
