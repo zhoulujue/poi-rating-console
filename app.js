@@ -619,6 +619,54 @@ function renderListItems(items = [], fallbackItems = []) {
   return (list.length ? list : fallback).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 }
 
+function normalizeDimensionInsights(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === "string") return { label: "维度", summary: item };
+        return {
+          label: item?.label || item?.name || "",
+          summary: item?.summary || item?.text || item?.description || "",
+        };
+      })
+      .filter((item) => item.label && item.summary);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([label, summary]) => ({
+        label,
+        summary: typeof summary === "string" ? summary : summary?.summary || summary?.text || "",
+      }))
+      .filter((item) => item.label && item.summary);
+  }
+
+  return [];
+}
+
+function renderDimensionInsights(summary) {
+  const items = normalizeDimensionInsights(summary.dimensionInsights);
+  if (!items.length) return "";
+
+  return `
+    <div class="decision-dimensions">
+      <h4>体验维度</h4>
+      <div class="decision-dimension-grid">
+        ${items
+          .map(
+            (item) => `
+              <article class="decision-dimension">
+                <h5>${escapeHtml(item.label)}</h5>
+                <p>${escapeHtml(item.summary)}</p>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderKnowBeforeYouGoCard() {
   if (state.providerPendingCount > 0) {
     const total = state.providerTotalCount || PROVIDER_BATCH_SOURCES.length;
@@ -692,6 +740,7 @@ function renderKnowBeforeYouGoCard() {
           <ul>${renderListItems(summary.tradeoffs, summary.watchouts)}</ul>
         </div>
       </div>
+      ${renderDimensionInsights(summary)}
       <div class="decision-takeaways">
         <h4>重点总结</h4>
         <ul>${renderListItems(summary.keyTakeaways, [summary.headline].filter(Boolean))}</ul>

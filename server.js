@@ -46,6 +46,17 @@ const MIME_TYPES = {
   ".svg": "image/svg+xml",
 };
 
+const RESTAURANT_INSIGHT_DIMENSIONS = ["环境", "氛围", "口味", "服务"];
+const HOTEL_INSIGHT_DIMENSIONS = [
+  "价格与性价比",
+  "位置与交通便利性",
+  "清洁度与卫生安全",
+  "房间本身",
+  "设施与服务",
+  "品牌与信任感",
+  "场景匹配",
+];
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -512,14 +523,129 @@ function formatKnowBeforeRating(source, rating) {
 function getSourceSignals(sources) {
   return sources
     .flatMap((source) => [
-      source.category,
+      ...(Array.isArray(source.reviewsPreview)
+        ? source.reviewsPreview.flatMap((review) =>
+            typeof review === "string"
+              ? [review]
+              : [review.title, review.text, review.rating ? `review rating ${review.rating}` : ""],
+          )
+        : []),
+      ...(Array.isArray(source.photosPreview)
+        ? source.photosPreview.map((photo) => (typeof photo === "string" ? photo : photo.caption))
+        : []),
       source.description,
-      ...(Array.isArray(source.reviewsPreview) ? source.reviewsPreview : []),
+      source.category,
     ])
     .filter(Boolean)
     .map((value) => String(value).replace(/\s+/g, " ").trim())
     .filter((value) => value.length > 0)
-    .slice(0, 5);
+    .filter((value) => value !== "[object Object]")
+    .filter((value) => !/Google Places|Tavily Search API|Brave Search API|Gemini Search|实时搜索结果|公开网页评分补全/.test(value))
+    .slice(0, 8);
+}
+
+function getInsightDimensions(type) {
+  return type === "hotel" ? HOTEL_INSIGHT_DIMENSIONS : RESTAURANT_INSIGHT_DIMENSIONS;
+}
+
+function findSignal(signals, keywords) {
+  return signals.find((signal) => {
+    const normalized = signal.toLowerCase();
+    return keywords.some((keyword) => normalized.includes(keyword.toLowerCase()));
+  });
+}
+
+function buildFallbackDimensionInsights(poi, ratings, sourceSignals, ratingSummary) {
+  const dimensions = getInsightDimensions(poi.type);
+  const signal = sourceSignals[0];
+
+  return dimensions.map((label) => {
+    if (poi.type === "hotel") {
+      const hotelSummaries = {
+        价格与性价比: poi.price && poi.price !== "暂无价格信息" ? `当前价格线索为 ${poi.price}，需结合 Booking/Agoda 近期房价判断性价比。` : "当前来源未明确给出价格或费用细节，性价比需要打开预订平台核对实时房价。",
+        位置与交通便利性: poi.area ? `位置线索为 ${poi.area}，建议结合地图确认到目的地和公共交通的距离。` : "当前来源未明确提及交通便利性，需要核对地图位置。",
+        清洁度与卫生安全: "当前来源未明确提及清洁度或卫生安全细节，建议重点查看近期低分评论。",
+        房间本身: signal ? `公开来源线索提到：${signal}。房间面积、隔音、床品等仍需查看近期评论确认。` : "当前来源未明确提及房间面积、隔音、床品或景观等房间细节。",
+        设施与服务: "当前来源未明确提及早餐、健身房、泳池、前台等设施服务细节，建议补查平台评论。",
+        品牌与信任感: ratingSummary !== "暂无可比较评分" ? `评分信号为：${ratingSummary}。可作为品牌/口碑可信度的初步判断。` : "当前评分覆盖不足，品牌与信任感需要更多平台交叉验证。",
+        场景匹配: poi.category ? `当前定位为 ${poi.category}，是否适合商务、亲子、度假或短住仍需结合行程需求判断。` : "当前来源未明确适合的住宿场景，需要结合行程需求再判断。",
+      };
+      return { label, summary: hotelSummaries[label] };
+    }
+
+    const environmentSignal = findSignal(sourceSignals, ["环境", "排队", "座位", "拥挤", "空间", "crowd", "seat", "line", "queue", "standing"]);
+    const tasteSignal = findSignal(sourceSignals, ["口味", "味道", "好吃", "菜", "taco", "food", "flavor", "taste", "delicious", "fresh"]);
+    const serviceSignal = findSignal(sourceSignals, ["服务", "速度", "态度", "上菜", "service", "staff", "quick", "fast", "wait"]);
+
+    const restaurantSummaries = {
+      环境: environmentSignal
+        ? `环境相关评论线索：${environmentSignal}。${poi.area ? `这条判断需要和 ${poi.area} 这家分店对应起来看。` : "仍建议核对具体分店。"}`
+        : poi.area
+          ? `位置/分店线索为 ${poi.area}。当前来源未明确提及店内空间、座位、排队或噪音等环境细节。`
+          : "当前来源未明确提及店内空间、座位、排队或噪音等环境细节。",
+      氛围: signal
+        ? `可参考的氛围线索：${signal}。是否适合约会、聚餐、独食或快餐，需要结合你的场景判断。`
+        : poi.category
+          ? `餐厅定位为 ${poi.category}，但当前来源未明确描述实际氛围。`
+          : "当前来源未明确提及氛围，需要查看评论中的用餐场景描述。",
+      口味: tasteSignal
+        ? `口味相关评论线索：${tasteSignal}。评分概览为 ${ratingSummary}，可作为口味稳定性的辅助信号。`
+        : ratingSummary !== "暂无可比较评分"
+          ? `评分概览：${ratingSummary}。这能反映整体口碑，但当前来源未明确提及具体招牌菜或口味风格。`
+          : "当前来源未明确提及菜品口味或招牌菜，需要补查评论。",
+      服务: serviceSignal
+        ? `服务相关评论线索：${serviceSignal}。建议继续核对服务速度、态度和排队管理是否稳定。`
+        : "当前来源未明确提及服务速度、态度或排队管理情况。",
+    };
+    return { label, summary: restaurantSummaries[label] };
+  });
+}
+
+function normalizeDimensionInsightItems(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === "string") return null;
+        return {
+          label: item?.label || item?.name || "",
+          summary: item?.summary || item?.text || item?.description || "",
+        };
+      })
+      .filter((item) => item?.label && item?.summary);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([label, summary]) => ({
+        label,
+        summary: typeof summary === "string" ? summary : summary?.summary || summary?.text || "",
+      }))
+      .filter((item) => item.label && item.summary);
+  }
+
+  return [];
+}
+
+function normalizeKnowBeforeSummary(summary, fallback, type) {
+  const expectedLabels = getInsightDimensions(type);
+  const summaryDimensions = new Map(
+    normalizeDimensionInsightItems(summary?.dimensionInsights).map((item) => [item.label, item.summary]),
+  );
+  const fallbackDimensions = new Map(
+    normalizeDimensionInsightItems(fallback.dimensionInsights).map((item) => [item.label, item.summary]),
+  );
+
+  return {
+    ...fallback,
+    ...(summary && typeof summary === "object" ? summary : {}),
+    dimensionInsights: expectedLabels.map((label) => ({
+      label,
+      summary:
+        summaryDimensions.get(label) ||
+        fallbackDimensions.get(label) ||
+        `当前来源未明确提及${label}，建议查看近期评论后再判断。`,
+    })),
+  };
 }
 
 function buildFallbackKnowBeforeYouGo(payload) {
@@ -546,6 +672,7 @@ function buildFallbackKnowBeforeYouGo(payload) {
     .sort((a, b) => b.normalized - a.normalized);
   const strongestRating = numericRatings[0]?.line;
   const guideSignal = ratings.Michelin?.label ? `Michelin 信号：${ratings.Michelin.label}` : null;
+  const dimensionInsights = buildFallbackDimensionInsights(poi, ratings, sourceSignals, ratingSummary);
 
   return {
     headline: poi.type === "hotel" ? `${poi.name || "这家酒店"}住宿决策速览` : `${poi.name || "这个餐厅"}到访前速览`,
@@ -595,6 +722,7 @@ function buildFallbackKnowBeforeYouGo(payload) {
       missingSources.length ? `缺失平台：${missingSources.join("、")}，这些平台最好继续补查。` : "核心平台暂无明显缺口，可以把注意力放到评论内容和位置匹配。",
       "评分只是第一层信号，评价量、更新时间、分店地址匹配度会直接影响可信度。",
     ],
+    dimensionInsights,
     sourceSummary: sources.length ? `已汇总 ${sourceNames.join("、")} 等来源。` : "目前暂无额外搜索来源返回内容。",
     confidence: ratingLines.length >= 3 ? "high" : ratingLines.length >= 2 ? "medium" : "low",
   };
@@ -638,6 +766,10 @@ Requirements:
 - Give enough substance for a user to decide whether this POI is worth visiting, booking, queueing for, or skipping.
 - Make the POI's DISTINCTIVE traits, advantages, and downside tradeoffs stand out. Explain what makes this specific POI different from a generic restaurant/hotel.
 - Distinguish "advantages" from "tradeoffs": advantages are reasons to choose it; tradeoffs are reasons a user may hesitate, skip, or verify first.
+- Make the summary close to the POI itself, not a generic destination summary.
+- If the POI type is restaurant, you MUST summarize these exact dimensions: 环境, 氛围, 口味, 服务.
+- If the POI type is hotel, you MUST summarize these exact dimensions: 价格与性价比, 位置与交通便利性, 清洁度与卫生安全, 房间本身, 设施与服务, 品牌与信任感, 场景匹配.
+- Each dimension summary should be 1-2 Chinese sentences and should use concrete evidence from ratings, review snippets, descriptions, category, location/branch signals, and source reliability. If a dimension is not mentioned in evidence, explicitly say 当前来源未明确提及 and explain what the user should verify.
 - Be specific when evidence is specific; explicitly say when a data point is missing or uncertain.
 - Do not invent opening hours, prices, awards, menu items, amenities, policies, or operational details unless they appear in evidence.
 - Prefer practical, decision-oriented language over generic praise.
@@ -649,6 +781,9 @@ Return ONLY valid JSON:
   "uniqueTraits": ["3 bullets explaining what is distinctive about this exact POI"],
   "advantages": ["3 concrete strengths or reasons to choose it"],
   "tradeoffs": ["3 concrete downsides, uncertainty points, or reasons to verify before going"],
+  "dimensionInsights": [
+    { "label": "dimension name", "summary": "POI-specific summary grounded in evidence" }
+  ],
   "keyTakeaways": ["4 concrete bullets with the most important facts"],
   "ratingRead": ["3 bullets explaining how to interpret the ratings, review counts, coverage, and confidence"],
   "bestFor": ["3 bullets describing who this is best for"],
@@ -667,7 +802,7 @@ ${JSON.stringify(payload, null, 2)}
       const text = modelData.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
       const parsed = extractJsonObject(text);
       sendJson(res, 200, {
-        data: parsed || fallback,
+        data: normalizeKnowBeforeSummary(parsed, fallback, payload.poi?.type),
         rawText: text,
         warning: parsed ? undefined : "LLM 输出无法解析，已使用规则摘要。",
       });

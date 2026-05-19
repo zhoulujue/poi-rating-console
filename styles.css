@@ -583,18 +583,49 @@ h1 {
   background: #fff9ec;
 }
 
+.decision-dimensions {
+  margin-bottom: 16px;
+}
+
+.decision-dimension-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.decision-dimension {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
 .decision-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
+.decision-dimensions h4,
 .decision-profile h4,
 .decision-takeaways h4,
 .decision-grid h4 {
   margin: 0 0 8px;
   font-size: 13px;
   color: var(--accent-strong);
+}
+
+.decision-dimension h5 {
+  margin: 0 0 7px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.decision-dimension p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .decision-profile ul,
@@ -728,6 +759,7 @@ h1 {
   .summary-grid,
   .rating-grid,
   .decision-profile,
+  .decision-dimension-grid,
   .decision-grid {
     grid-template-columns: 1fr;
   }
