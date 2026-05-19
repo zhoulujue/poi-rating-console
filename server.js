@@ -221,35 +221,93 @@ function providerCacheIsUsable(payload, targetPlatforms) {
   return getMissingPlatforms(payload, targetPlatforms).length === 0;
 }
 
-function getProviderCacheKey(url, source) {
+const PROVIDER_IDENTITY_PARAM_KEYS = new Set(["poiId", "poiSource", "placeId", "cacheIdentityId", "cacheIdentitySource"]);
+
+function getProviderCacheParams(url, options = {}) {
+  const includeIdentity = options.includeIdentity !== false;
   const params = {};
   Array.from(url.searchParams.keys())
     .sort()
     .forEach((key) => {
+      if (!includeIdentity && PROVIDER_IDENTITY_PARAM_KEYS.has(key)) return;
       params[key] = url.searchParams.getAll(key).map((value) => value.trim());
     });
+  return params;
+}
+
+function getProviderCacheIdentity(url) {
+  const id =
+    url.searchParams.get("poiId") ||
+    url.searchParams.get("placeId") ||
+    url.searchParams.get("cacheIdentityId") ||
+    "";
+  const normalizedId = normalizeLookupKey(id);
+  if (!normalizedId) return null;
+
+  return {
+    source: url.searchParams.get("poiSource") || url.searchParams.get("cacheIdentitySource") || "poi",
+    type: url.searchParams.get("type") || "all",
+    id: normalizedId,
+  };
+}
+
+function getProviderCacheKey(url, source) {
+  const identity = getProviderCacheIdentity(url);
+  if (identity) {
+    return makeCacheKey({
+      kind: "provider",
+      source,
+      path: url.pathname,
+      identity,
+    });
+  }
 
   return makeCacheKey({
     kind: "provider",
     source,
     path: url.pathname,
-    params,
+    params: getProviderCacheParams(url),
+  });
+}
+
+function getLegacyProviderCacheKey(url, source) {
+  return makeCacheKey({
+    kind: "provider",
+    source,
+    path: url.pathname,
+    params: getProviderCacheParams(url, { includeIdentity: false }),
   });
 }
 
 function maybeServeCachedProvider(res, url, source) {
   const type = url.searchParams.get("type") || "all";
   const targetPlatforms = getProviderTargetPlatforms(source, type);
+  const identity = getProviderCacheIdentity(url);
+  const cacheScope = identity ? "poi-identity" : "request";
   const key = getProviderCacheKey(url, source);
-  const entry = getCacheEntry(key);
+  const legacyKey = getLegacyProviderCacheKey(url, source);
+  const directEntry = getCacheEntry(key);
+  const legacyEntry = legacyKey !== key ? getCacheEntry(legacyKey) : null;
+  const entry = directEntry || legacyEntry;
 
   if (entry && providerCacheIsUsable(entry.payload, targetPlatforms)) {
+    if (!directEntry) {
+      writeCacheEntry(key, entry.payload, {
+        source,
+        targetPlatforms,
+        cacheScope,
+        platforms: getPayloadPlatforms(entry.payload),
+        migratedFrom: "request",
+      });
+    }
+
     sendJson(
       res,
       200,
       withCacheMetadata(entry.payload, {
         status: "hit",
         source,
+        scope: cacheScope,
         updatedAt: entry.updatedAt,
         platforms: getPayloadPlatforms(entry.payload),
       }),
@@ -262,6 +320,7 @@ function maybeServeCachedProvider(res, url, source) {
     source,
     targetPlatforms,
     staleMissingPlatforms: entry ? getMissingPlatforms(entry.payload, targetPlatforms) : [],
+    cacheScope,
   };
   return false;
 }

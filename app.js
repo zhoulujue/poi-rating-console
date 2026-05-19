@@ -487,12 +487,15 @@ function selectPoi(id) {
   state.selectedId = id;
   state.userSelectedPoi = true;
   const selectedPoi = getFilteredPois().find((poi) => poi.id === id);
+  const cacheIdentity = selectedPoi ? getKnowBeforeCacheIdentity(selectedPoi, selectedPoi) : null;
   state.providerLookup = selectedPoi
     ? {
         id: selectedPoi.id,
         query: selectedPoi.name,
         type: selectedPoi.type,
         city: selectedPoi.city,
+        poiId: cacheIdentity?.id || selectedPoi.id,
+        poiSource: cacheIdentity?.source || "local",
       }
     : null;
   clearProviderResults();
@@ -1069,6 +1072,19 @@ function getDefaultMaxScore(source) {
 
 function getProviderLookup() {
   return state.providerLookup;
+}
+
+function getProviderSearchParams(lookup, type) {
+  const params = new URLSearchParams({
+    q: lookup?.query?.trim() || "",
+    type,
+    city: lookup?.city || "",
+  });
+
+  if (lookup?.poiId) params.set("poiId", lookup.poiId);
+  if (lookup?.poiSource) params.set("poiSource", lookup.poiSource);
+
+  return params;
 }
 
 function getGeminiPlatformsForType(type) {
@@ -1683,11 +1699,7 @@ function searchTripAdvisor(batchId) {
     render();
 
     try {
-      const params = new URLSearchParams({
-        q: query,
-        type,
-        city: lookup?.city || "",
-      });
+      const params = getProviderSearchParams(lookup, type);
       const response = await fetch(`/api/tripadvisor/search?${params}`);
       const payload = await response.json();
 
@@ -1748,11 +1760,7 @@ function searchBooking(batchId) {
     render();
 
     try {
-      const params = new URLSearchParams({
-        q: query,
-        type,
-        city: lookup?.city || "",
-      });
+      const params = getProviderSearchParams(lookup, type);
       const response = await fetch(`/api/booking/search?${params}`);
       const payload = await response.json();
 
@@ -1817,11 +1825,7 @@ function searchYelp(batchId) {
     render();
 
     try {
-      const params = new URLSearchParams({
-        q: query,
-        type,
-        city: lookup?.city || "",
-      });
+      const params = getProviderSearchParams(lookup, type);
       const response = await fetch(`/api/yelp/search?${params}`);
       const payload = await response.json();
 
@@ -1889,11 +1893,7 @@ function searchGeminiRatings(batchId) {
     render();
 
     try {
-      const params = new URLSearchParams({
-        q: query,
-        type,
-        city: lookup?.city || "",
-      });
+      const params = getProviderSearchParams(lookup, type);
       const response = await fetch(`/api/gemini/ratings?${params}`);
       const payload = await response.json();
 
@@ -1985,11 +1985,7 @@ function searchBraveRatings(batchId) {
     render();
 
     try {
-      const params = new URLSearchParams({
-        q: query,
-        type,
-        city: lookup?.city || "",
-      });
+      const params = getProviderSearchParams(lookup, type);
       const response = await fetch(`/api/brave/ratings?${params}`);
       const payload = await response.json();
 
@@ -2085,11 +2081,7 @@ function searchTavilyRatings(batchId) {
     render();
 
     try {
-      const params = new URLSearchParams({
-        q: query,
-        type,
-        city: lookup?.city || "",
-      });
+      const params = getProviderSearchParams(lookup, type);
       const response = await fetch(`/api/tavily/ratings?${params}`);
       const payload = await response.json();
 
