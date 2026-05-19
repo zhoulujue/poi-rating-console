@@ -232,7 +232,11 @@ function sendJson(res, status, payload) {
       platforms,
     });
     responsePayload = withCacheMetadata(payload, {
-      status: cacheWrite.staleMissingPlatforms?.length ? "refreshed-missing-platforms" : "stored",
+      status: cacheWrite.forceRefresh
+        ? "refreshed"
+        : cacheWrite.staleMissingPlatforms?.length
+          ? "refreshed-missing-platforms"
+          : "stored",
       source: cacheWrite.source,
       updatedAt: entry.updatedAt,
       platforms,
@@ -911,7 +915,7 @@ function buildFallbackKnowBeforeYouGo(payload) {
   };
 }
 
-async function handleKnowBeforeYouGo(req, res) {
+async function handleKnowBeforeYouGo(req, res, url) {
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" });
     return;
@@ -932,13 +936,14 @@ async function handleKnowBeforeYouGo(req, res) {
     }
 
     const fallback = buildFallbackKnowBeforeYouGo(payload);
+    const forceRefresh = url.searchParams.get("refresh") === "1" || req.headers["x-cache-refresh"] === "1";
     const cacheKey = makeCacheKey({
       kind: "know-before-you-go",
       payload,
     });
     const cached = getCacheEntry(cacheKey);
 
-    if (cached) {
+    if (cached && !forceRefresh) {
       sendJson(
         res,
         200,
@@ -956,6 +961,7 @@ async function handleKnowBeforeYouGo(req, res) {
       source: "know-before-you-go",
       targetPlatforms: [],
       staleMissingPlatforms: [],
+      forceRefresh,
     };
 
     if (!geminiApiKey) {
@@ -1883,7 +1889,7 @@ function handleRequest(req, res) {
   }
 
   if (url.pathname === "/api/know-before-you-go") {
-    handleKnowBeforeYouGo(req, res);
+    handleKnowBeforeYouGo(req, res, url);
     return;
   }
 

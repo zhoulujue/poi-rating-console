@@ -161,6 +161,7 @@ const state = {
   knowBeforeYouGoStatus: "idle",
   knowBeforeYouGoError: "",
   knowBeforeYouGoSignature: "",
+  knowBeforeYouGoCache: null,
   providerBatchId: 0,
   providerPendingCount: 0,
   providerTotalCount: 0,
@@ -356,6 +357,7 @@ function clearProviderResults() {
   state.knowBeforeYouGoStatus = "idle";
   state.knowBeforeYouGoError = "";
   state.knowBeforeYouGoSignature = "";
+  state.knowBeforeYouGoCache = null;
 }
 
 function beginProviderBatch() {
@@ -366,6 +368,7 @@ function beginProviderBatch() {
   state.knowBeforeYouGoStatus = "waiting";
   state.knowBeforeYouGoError = "";
   state.knowBeforeYouGoSignature = "";
+  state.knowBeforeYouGoCache = null;
   clearTimeout(knowBeforeYouGoTimer);
   knowBeforeYouGoToken += 1;
   return state.providerBatchId;
@@ -667,6 +670,27 @@ function renderDimensionInsights(summary) {
   `;
 }
 
+function renderKnowBeforeCacheLabel() {
+  const status = state.knowBeforeYouGoCache?.status;
+  const labels = {
+    hit: "缓存命中",
+    stored: "新生成",
+    refreshed: "已刷新",
+  };
+  return labels[status] ? ` · ${labels[status]}` : "";
+}
+
+function renderKnowBeforeActions(label, options = {}) {
+  const disabled = options.disabled ? " disabled" : "";
+  const buttonLabel = options.buttonLabel || "重新生成";
+  return `
+    <div class="decision-actions">
+      <span class="platform-note">${escapeHtml(label)}</span>
+      <button type="button" class="decision-refresh" data-know-before-action="refresh"${disabled}>${escapeHtml(buttonLabel)}</button>
+    </div>
+  `;
+}
+
 function renderKnowBeforeYouGoCard() {
   if (state.providerPendingCount > 0) {
     const total = state.providerTotalCount || PROVIDER_BATCH_SOURCES.length;
@@ -675,7 +699,10 @@ function renderKnowBeforeYouGoCard() {
       <section class="decision-card">
         <div class="section-heading">
           <h3>Know Before You Go</h3>
-          <span class="platform-note">等待 provider ${finished}/${total}</span>
+          ${renderKnowBeforeActions(`等待 provider ${finished}/${total}`, {
+            disabled: true,
+            buttonLabel: "等待中",
+          })}
         </div>
         <p class="decision-summary">所有 provider 返回成功、失败或无结果后，才会发起一次 LLM 汇总。当前还剩 ${state.providerPendingCount} 个来源。</p>
       </section>
@@ -687,7 +714,10 @@ function renderKnowBeforeYouGoCard() {
       <section class="decision-card">
         <div class="section-heading">
           <h3>Know Before You Go</h3>
-          <span class="platform-note">正在整理各来源信息</span>
+          ${renderKnowBeforeActions("正在整理各来源信息", {
+            disabled: true,
+            buttonLabel: "生成中",
+          })}
         </div>
         <p class="decision-summary">所有 provider 已返回，正在汇总 Google、TripAdvisor、Tavily、Brave、Gemini 等来源，生成决策摘要。</p>
       </section>
@@ -699,7 +729,7 @@ function renderKnowBeforeYouGoCard() {
       <section class="decision-card is-warn">
         <div class="section-heading">
           <h3>Know Before You Go</h3>
-          <span class="platform-note">整理失败</span>
+          ${renderKnowBeforeActions("整理失败")}
         </div>
         <p class="decision-summary">${state.knowBeforeYouGoError || "暂时无法生成摘要。"}</p>
       </section>
@@ -712,7 +742,10 @@ function renderKnowBeforeYouGoCard() {
       <section class="decision-card">
         <div class="section-heading">
           <h3>Know Before You Go</h3>
-          <span class="platform-note">等待来源返回</span>
+          ${renderKnowBeforeActions("等待来源返回", {
+            disabled: true,
+            buttonLabel: "待生成",
+          })}
         </div>
         <p class="decision-summary">选中 POI 后，我会在这里汇总各搜索来源，给出决策前要点。</p>
       </section>
@@ -723,7 +756,7 @@ function renderKnowBeforeYouGoCard() {
     <section class="decision-card">
       <div class="section-heading">
         <h3>Know Before You Go</h3>
-        <span class="platform-note">信心：${summary.confidence || "medium"}</span>
+        ${renderKnowBeforeActions(`信心：${summary.confidence || "medium"}${renderKnowBeforeCacheLabel()}`)}
       </div>
       <p class="decision-summary">${escapeHtml(summary.overview || summary.headline || "到访前速览")}</p>
       <div class="decision-profile">
@@ -808,11 +841,12 @@ function getProviderEvidence() {
   };
 }
 
-function maybeGenerateKnowBeforeYouGo() {
+function maybeGenerateKnowBeforeYouGo(options = {}) {
   clearTimeout(knowBeforeYouGoTimer);
 
   if (state.providerPendingCount > 0) return;
 
+  const force = Boolean(options.force);
   knowBeforeYouGoTimer = setTimeout(async () => {
     if (state.providerPendingCount > 0) return;
 
@@ -824,7 +858,7 @@ function maybeGenerateKnowBeforeYouGo() {
       ratings: evidence.ratings,
       sourceCount: evidence.sources.length,
     });
-    if (signature === state.knowBeforeYouGoSignature) return;
+    if (!force && signature === state.knowBeforeYouGoSignature) return;
 
     const token = ++knowBeforeYouGoToken;
     state.knowBeforeYouGoSignature = signature;
@@ -833,10 +867,12 @@ function maybeGenerateKnowBeforeYouGo() {
     render();
 
     try {
-      const response = await fetch("/api/know-before-you-go", {
+      const endpoint = force ? "/api/know-before-you-go?refresh=1" : "/api/know-before-you-go";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          ...(force ? { "x-cache-refresh": "1" } : {}),
         },
         body: JSON.stringify(evidence),
       });
@@ -850,15 +886,17 @@ function maybeGenerateKnowBeforeYouGo() {
       state.knowBeforeYouGo = payload.data;
       state.knowBeforeYouGoStatus = "ready";
       state.knowBeforeYouGoError = payload.warning || "";
+      state.knowBeforeYouGoCache = payload.cache || null;
     } catch (error) {
       if (token !== knowBeforeYouGoToken) return;
       state.knowBeforeYouGo = null;
       state.knowBeforeYouGoStatus = "error";
       state.knowBeforeYouGoError = error.message;
+      state.knowBeforeYouGoCache = null;
     } finally {
       if (token === knowBeforeYouGoToken) render();
     }
-  }, 800);
+  }, force ? 0 : 800);
 }
 
 function renderDetail(poi) {
@@ -2089,6 +2127,12 @@ elements.quickFilters.addEventListener("click", (event) => {
 });
 
 elements.detailView.addEventListener("click", (event) => {
+  const refreshButton = event.target.closest("button[data-know-before-action='refresh']");
+  if (refreshButton) {
+    maybeGenerateKnowBeforeYouGo({ force: true });
+    return;
+  }
+
   const button = event.target.closest("button[data-rating-action]");
   if (!button) return;
 
