@@ -1,4 +1,5 @@
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { URL } = require("node:url");
@@ -31,6 +32,9 @@ const {
 const PORT = Number(process.env.PORT || 4173);
 const MAX_PORT_ATTEMPTS = 20;
 const ROOT = __dirname;
+const CACHE_DIR = process.env.POI_CACHE_DIR || path.join(ROOT, ".data");
+const CACHE_FILE = process.env.POI_CACHE_FILE || path.join(CACHE_DIR, "poi-cache.json");
+const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 1000);
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
@@ -57,12 +61,191 @@ const HOTEL_INSIGHT_DIMENSIONS = [
   "场景匹配",
 ];
 
+function sortDeep(value) {
+  if (Array.isArray(value)) return value.map(sortDeep);
+  if (!value || typeof value !== "object") return value;
+
+  return Object.keys(value)
+    .sort()
+    .reduce((result, key) => {
+      result[key] = sortDeep(value[key]);
+      return result;
+    }, {});
+}
+
+function stableStringify(value) {
+  return JSON.stringify(sortDeep(value));
+}
+
+function makeCacheKey(parts) {
+  return crypto.createHash("sha256").update(stableStringify(parts)).digest("hex");
+}
+
+function loadResponseCache() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    return {
+      version: 1,
+      entries: parsed.entries && typeof parsed.entries === "object" ? parsed.entries : {},
+    };
+  } catch {
+    return { version: 1, entries: {} };
+  }
+}
+
+const responseCache = loadResponseCache();
+
+function persistResponseCache() {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+  const entries = Object.entries(responseCache.entries);
+  if (entries.length > CACHE_MAX_ENTRIES) {
+    entries
+      .sort(([, a], [, b]) => String(a.updatedAt || "").localeCompare(String(b.updatedAt || "")))
+      .slice(0, entries.length - CACHE_MAX_ENTRIES)
+      .forEach(([key]) => {
+        delete responseCache.entries[key];
+      });
+  }
+
+  const tmpFile = `${CACHE_FILE}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(responseCache, null, 2));
+  fs.renameSync(tmpFile, CACHE_FILE);
+}
+
+function getCacheEntry(key) {
+  return responseCache.entries[key] || null;
+}
+
+function writeCacheEntry(key, payload, meta = {}) {
+  const now = new Date().toISOString();
+  const previous = responseCache.entries[key];
+  responseCache.entries[key] = {
+    createdAt: previous?.createdAt || now,
+    updatedAt: now,
+    payload,
+    meta,
+  };
+  persistResponseCache();
+  return responseCache.entries[key];
+}
+
+function withCacheMetadata(payload, cache) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  return { ...payload, cache };
+}
+
+function getRequiredPlatformsForType(type) {
+  if (type === "hotel") return ["Google", "Booking", "Agoda", "TripAdvisor"];
+  if (type === "restaurant") return ["Google", "Yelp", "Michelin", "TripAdvisor"];
+  return [];
+}
+
+function getProviderTargetPlatforms(source, type) {
+  if (source === "tripadvisor") return ["TripAdvisor"];
+  if (source === "booking") return type === "restaurant" ? [] : ["Booking"];
+  if (source === "yelp") return type === "hotel" ? [] : ["Yelp"];
+  if (source === "brave" || source === "tavily" || source === "gemini") return getGeminiPlatforms(type);
+  return [];
+}
+
+function ratingHasUsableValue(rating) {
+  if (!rating) return false;
+  if (rating.label) return true;
+  const score = Number(rating.score);
+  return Number.isFinite(score) && score > 0;
+}
+
+function getPayloadPlatforms(payload) {
+  const platforms = new Set();
+  toArray(payload?.data).forEach((poi) => {
+    Object.entries(poi?.ratings || {}).forEach(([platform, rating]) => {
+      if (ratingHasUsableValue(rating)) platforms.add(platform);
+    });
+  });
+  return Array.from(platforms).sort();
+}
+
+function getMissingPlatforms(payload, targetPlatforms) {
+  const present = new Set(getPayloadPlatforms(payload));
+  return targetPlatforms.filter((platform) => !present.has(platform));
+}
+
+function providerCacheIsUsable(payload, targetPlatforms) {
+  return getMissingPlatforms(payload, targetPlatforms).length === 0;
+}
+
+function getProviderCacheKey(url, source) {
+  const params = {};
+  Array.from(url.searchParams.keys())
+    .sort()
+    .forEach((key) => {
+      params[key] = url.searchParams.getAll(key).map((value) => value.trim());
+    });
+
+  return makeCacheKey({
+    kind: "provider",
+    source,
+    path: url.pathname,
+    params,
+  });
+}
+
+function maybeServeCachedProvider(res, url, source) {
+  const type = url.searchParams.get("type") || "all";
+  const targetPlatforms = getProviderTargetPlatforms(source, type);
+  const key = getProviderCacheKey(url, source);
+  const entry = getCacheEntry(key);
+
+  if (entry && providerCacheIsUsable(entry.payload, targetPlatforms)) {
+    sendJson(
+      res,
+      200,
+      withCacheMetadata(entry.payload, {
+        status: "hit",
+        source,
+        updatedAt: entry.updatedAt,
+        platforms: getPayloadPlatforms(entry.payload),
+      }),
+    );
+    return true;
+  }
+
+  res.__cacheWrite = {
+    key,
+    source,
+    targetPlatforms,
+    staleMissingPlatforms: entry ? getMissingPlatforms(entry.payload, targetPlatforms) : [],
+  };
+  return false;
+}
+
 function sendJson(res, status, payload) {
+  const cacheWrite = res.__cacheWrite;
+  let responsePayload = payload;
+
+  if (cacheWrite && status >= 200 && status < 300) {
+    const platforms = getPayloadPlatforms(payload);
+    const entry = writeCacheEntry(cacheWrite.key, payload, {
+      source: cacheWrite.source,
+      targetPlatforms: cacheWrite.targetPlatforms,
+      platforms,
+    });
+    responsePayload = withCacheMetadata(payload, {
+      status: cacheWrite.staleMissingPlatforms?.length ? "refreshed-missing-platforms" : "stored",
+      source: cacheWrite.source,
+      updatedAt: entry.updatedAt,
+      platforms,
+      missingPlatforms: getMissingPlatforms(payload, cacheWrite.targetPlatforms),
+      previousMissingPlatforms: cacheWrite.staleMissingPlatforms,
+    });
+  }
+
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
   });
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(responsePayload));
 }
 
 function getTripAdvisorCategory(type) {
@@ -749,6 +932,31 @@ async function handleKnowBeforeYouGo(req, res) {
     }
 
     const fallback = buildFallbackKnowBeforeYouGo(payload);
+    const cacheKey = makeCacheKey({
+      kind: "know-before-you-go",
+      payload,
+    });
+    const cached = getCacheEntry(cacheKey);
+
+    if (cached) {
+      sendJson(
+        res,
+        200,
+        withCacheMetadata(cached.payload, {
+          status: "hit",
+          source: "know-before-you-go",
+          updatedAt: cached.updatedAt,
+        }),
+      );
+      return;
+    }
+
+    res.__cacheWrite = {
+      key: cacheKey,
+      source: "know-before-you-go",
+      targetPlatforms: [],
+      staleMissingPlatforms: [],
+    };
 
     if (!geminiApiKey) {
       sendJson(res, 200, {
@@ -1634,16 +1842,19 @@ function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (url.pathname === "/api/tripadvisor/search") {
+    if (maybeServeCachedProvider(res, url, "tripadvisor")) return;
     handleTripAdvisorSearch(req, res, url);
     return;
   }
 
   if (url.pathname === "/api/booking/search") {
+    if (maybeServeCachedProvider(res, url, "booking")) return;
     handleBookingSearch(req, res, url);
     return;
   }
 
   if (url.pathname === "/api/yelp/search") {
+    if (maybeServeCachedProvider(res, url, "yelp")) return;
     handleYelpSearch(req, res, url);
     return;
   }
@@ -1654,16 +1865,19 @@ function handleRequest(req, res) {
   }
 
   if (url.pathname === "/api/gemini/ratings") {
+    if (maybeServeCachedProvider(res, url, "gemini")) return;
     handleGeminiRatings(req, res, url);
     return;
   }
 
   if (url.pathname === "/api/brave/ratings") {
+    if (maybeServeCachedProvider(res, url, "brave")) return;
     handleBraveRatings(req, res, url);
     return;
   }
 
   if (url.pathname === "/api/tavily/ratings") {
+    if (maybeServeCachedProvider(res, url, "tavily")) return;
     handleTavilyRatings(req, res, url);
     return;
   }

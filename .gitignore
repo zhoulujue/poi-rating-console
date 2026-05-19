@@ -3,3 +3,4 @@ server-config.js
 node_modules/
 .DS_Store
 npm-debug.log*
+.data/
