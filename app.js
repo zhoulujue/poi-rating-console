@@ -380,8 +380,12 @@ function finishProviderBatchSource(batchId) {
   state.providerPendingCount = Math.max(0, state.providerPendingCount - 1);
 
   if (state.providerPendingCount === 0) {
-    state.knowBeforeYouGoStatus = "idle";
+    const hadReadySummary = state.knowBeforeYouGoStatus === "ready";
+    if (state.knowBeforeYouGoStatus !== "ready") {
+      state.knowBeforeYouGoStatus = "idle";
+    }
     maybeGenerateKnowBeforeYouGo();
+    if (hadReadySummary) render();
   }
 }
 
@@ -493,6 +497,7 @@ function selectPoi(id) {
     : null;
   clearProviderResults();
   render();
+  tryLoadCachedKnowBeforeYouGo(selectedPoi);
   searchProviderSourcesForSelected(selectedPoi);
 }
 
@@ -691,72 +696,16 @@ function renderKnowBeforeActions(label, options = {}) {
   `;
 }
 
-function renderKnowBeforeYouGoCard() {
-  if (state.providerPendingCount > 0) {
-    const total = state.providerTotalCount || PROVIDER_BATCH_SOURCES.length;
-    const finished = Math.max(0, total - state.providerPendingCount);
-    return `
-      <section class="decision-card">
-        <div class="section-heading">
-          <h3>Know Before You Go</h3>
-          ${renderKnowBeforeActions(`等待 provider ${finished}/${total}`, {
-            disabled: true,
-            buttonLabel: "等待中",
-          })}
-        </div>
-        <p class="decision-summary">所有 provider 返回成功、失败或无结果后，才会发起一次 LLM 汇总。当前还剩 ${state.providerPendingCount} 个来源。</p>
-      </section>
-    `;
-  }
-
-  if (state.knowBeforeYouGoStatus === "loading") {
-    return `
-      <section class="decision-card">
-        <div class="section-heading">
-          <h3>Know Before You Go</h3>
-          ${renderKnowBeforeActions("正在整理各来源信息", {
-            disabled: true,
-            buttonLabel: "生成中",
-          })}
-        </div>
-        <p class="decision-summary">所有 provider 已返回，正在汇总 Google、TripAdvisor、Tavily、Brave、Gemini 等来源，生成决策摘要。</p>
-      </section>
-    `;
-  }
-
-  if (state.knowBeforeYouGoStatus === "error") {
-    return `
-      <section class="decision-card is-warn">
-        <div class="section-heading">
-          <h3>Know Before You Go</h3>
-          ${renderKnowBeforeActions("整理失败")}
-        </div>
-        <p class="decision-summary">${state.knowBeforeYouGoError || "暂时无法生成摘要。"}</p>
-      </section>
-    `;
-  }
-
-  const summary = state.knowBeforeYouGo;
-  if (!summary) {
-    return `
-      <section class="decision-card">
-        <div class="section-heading">
-          <h3>Know Before You Go</h3>
-          ${renderKnowBeforeActions("等待来源返回", {
-            disabled: true,
-            buttonLabel: "待生成",
-          })}
-        </div>
-        <p class="decision-summary">选中 POI 后，我会在这里汇总各搜索来源，给出决策前要点。</p>
-      </section>
-    `;
-  }
-
+function renderKnowBeforeReadyCard(summary) {
+  const isWaitingForProviders = state.providerPendingCount > 0;
   return `
     <section class="decision-card">
       <div class="section-heading">
         <h3>Know Before You Go</h3>
-        ${renderKnowBeforeActions(`信心：${summary.confidence || "medium"}${renderKnowBeforeCacheLabel()}`)}
+        ${renderKnowBeforeActions(`信心：${summary.confidence || "medium"}${renderKnowBeforeCacheLabel()}`, {
+          disabled: isWaitingForProviders,
+          buttonLabel: isWaitingForProviders ? "等待刷新" : "重新生成",
+        })}
       </div>
       <p class="decision-summary">${escapeHtml(summary.overview || summary.headline || "到访前速览")}</p>
       <div class="decision-profile">
@@ -801,6 +750,86 @@ function renderKnowBeforeYouGoCard() {
   `;
 }
 
+function renderKnowBeforeYouGoCard() {
+  const summary = state.knowBeforeYouGo;
+  if (summary && state.knowBeforeYouGoStatus === "ready") {
+    return renderKnowBeforeReadyCard(summary);
+  }
+
+  if (state.providerPendingCount > 0) {
+    const total = state.providerTotalCount || PROVIDER_BATCH_SOURCES.length;
+    const finished = Math.max(0, total - state.providerPendingCount);
+    return `
+      <section class="decision-card">
+        <div class="section-heading">
+          <h3>Know Before You Go</h3>
+          ${renderKnowBeforeActions(`等待 provider ${finished}/${total}`, {
+            disabled: true,
+            buttonLabel: "等待中",
+          })}
+        </div>
+        <p class="decision-summary">所有 provider 返回成功、失败或无结果后，才会发起一次 LLM 汇总。当前还剩 ${state.providerPendingCount} 个来源。</p>
+      </section>
+    `;
+  }
+
+  if (state.knowBeforeYouGoStatus === "loading") {
+    return `
+      <section class="decision-card">
+        <div class="section-heading">
+          <h3>Know Before You Go</h3>
+          ${renderKnowBeforeActions("正在整理各来源信息", {
+            disabled: true,
+            buttonLabel: "生成中",
+          })}
+        </div>
+        <p class="decision-summary">所有 provider 已返回，正在汇总 Google、TripAdvisor、Tavily、Brave、Gemini 等来源，生成决策摘要。</p>
+      </section>
+    `;
+  }
+
+  if (state.knowBeforeYouGoStatus === "error") {
+    return `
+      <section class="decision-card is-warn">
+        <div class="section-heading">
+          <h3>Know Before You Go</h3>
+          ${renderKnowBeforeActions("整理失败")}
+        </div>
+        <p class="decision-summary">${state.knowBeforeYouGoError || "暂时无法生成摘要。"}</p>
+      </section>
+    `;
+  }
+
+  if (!summary) {
+    return `
+      <section class="decision-card">
+        <div class="section-heading">
+          <h3>Know Before You Go</h3>
+          ${renderKnowBeforeActions("等待来源返回", {
+            disabled: true,
+            buttonLabel: "待生成",
+          })}
+        </div>
+        <p class="decision-summary">选中 POI 后，我会在这里汇总各搜索来源，给出决策前要点。</p>
+      </section>
+    `;
+  }
+  return renderKnowBeforeReadyCard(summary);
+}
+
+function getKnowBeforeCacheIdentity(selected, merged) {
+  const stableId = selected.placeId || selected.id;
+  const isGooglePlace = Boolean(selected.placeId || selected.id?.startsWith("google-"));
+  return {
+    source: isGooglePlace ? "google-places" : "local",
+    id: stableId,
+    type: merged.type,
+    name: merged.name,
+    city: merged.city,
+    area: merged.area,
+  };
+}
+
 function getProviderEvidence() {
   const selected = getFilteredPois().find((poi) => poi.id === state.selectedId);
   const merged = mergeProviderRatingsIntoPoi(selected);
@@ -817,7 +846,9 @@ function getProviderEvidence() {
   ];
 
   return {
+    cacheIdentity: getKnowBeforeCacheIdentity(selected, merged),
     poi: {
+      id: selected.placeId || selected.id,
       name: merged.name,
       type: merged.type,
       city: merged.city,
@@ -841,12 +872,55 @@ function getProviderEvidence() {
   };
 }
 
+async function tryLoadCachedKnowBeforeYouGo(selectedPoi) {
+  if (!selectedPoi || isFileRuntime()) return;
+
+  const identity = getKnowBeforeCacheIdentity(selectedPoi, selectedPoi);
+  const token = ++knowBeforeYouGoToken;
+
+  try {
+    const response = await fetch("/api/know-before-you-go?cacheOnly=1", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        cacheIdentity: identity,
+        poi: {
+          id: identity.id,
+          name: selectedPoi.name,
+          type: selectedPoi.type,
+          city: selectedPoi.city,
+          area: selectedPoi.area,
+          category: selectedPoi.category,
+          description: selectedPoi.description,
+          price: selectedPoi.price,
+        },
+      }),
+    });
+    const payload = await response.json();
+
+    if (token !== knowBeforeYouGoToken || response.status === 404) return;
+    if (!response.ok) throw new Error(payload.error || `Know Before You Go 缓存返回 ${response.status}`);
+
+    state.knowBeforeYouGo = payload.data;
+    state.knowBeforeYouGoStatus = "ready";
+    state.knowBeforeYouGoError = payload.warning || "";
+    state.knowBeforeYouGoCache = payload.cache || null;
+    render();
+  } catch {
+    if (token === knowBeforeYouGoToken && state.knowBeforeYouGoStatus === "ready") render();
+  }
+}
+
 function maybeGenerateKnowBeforeYouGo(options = {}) {
   clearTimeout(knowBeforeYouGoTimer);
 
   if (state.providerPendingCount > 0) return;
 
   const force = Boolean(options.force);
+  if (!force && state.knowBeforeYouGo && state.knowBeforeYouGoCache?.scope === "poi-identity") return;
+
   knowBeforeYouGoTimer = setTimeout(async () => {
     if (state.providerPendingCount > 0) return;
 
@@ -1313,6 +1387,7 @@ function mapGooglePlaceToPoi(place) {
 
   return {
     id: `google-${place.place_id}`,
+    placeId: place.place_id,
     type,
     name: place.name,
     city,

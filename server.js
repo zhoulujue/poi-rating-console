@@ -34,7 +34,7 @@ const MAX_PORT_ATTEMPTS = 20;
 const ROOT = __dirname;
 const CACHE_DIR = process.env.POI_CACHE_DIR || path.join(ROOT, ".data");
 const CACHE_FILE = process.env.POI_CACHE_FILE || path.join(CACHE_DIR, "poi-cache.json");
-const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 1000);
+const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 10000000);
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
@@ -135,6 +135,52 @@ function withCacheMetadata(payload, cache) {
   return { ...payload, cache };
 }
 
+function getKnowBeforeCacheIdentity(payload) {
+  const poi = payload?.poi || {};
+  const identity = payload?.cacheIdentity || poi.cacheIdentity || {};
+  const id = identity.id || identity.placeId || identity.googlePlaceId || poi.id || "";
+  const normalizedId = normalizeLookupKey(id);
+  const type = identity.type || poi.type || "poi";
+  const source = identity.source || (normalizedId.startsWith("google ") ? "google-places" : "poi");
+
+  if (normalizedId) {
+    return {
+      source,
+      type,
+      id: normalizedId,
+    };
+  }
+
+  return {
+    source,
+    type,
+    name: normalizeLookupKey(identity.name || poi.name),
+    city: normalizeLookupKey(identity.city || poi.city),
+    area: normalizeLookupKey(identity.area || poi.area),
+  };
+}
+
+function getKnowBeforeCacheKey(payload) {
+  return makeCacheKey({
+    kind: "know-before-you-go",
+    identity: getKnowBeforeCacheIdentity(payload),
+  });
+}
+
+function getLegacyKnowBeforePayload(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  const legacyPayload = { ...payload };
+  delete legacyPayload.cacheIdentity;
+
+  if (legacyPayload.poi && typeof legacyPayload.poi === "object") {
+    legacyPayload.poi = { ...legacyPayload.poi };
+    delete legacyPayload.poi.id;
+    delete legacyPayload.poi.cacheIdentity;
+  }
+
+  return legacyPayload;
+}
+
 function getRequiredPlatformsForType(type) {
   if (type === "hotel") return ["Google", "Booking", "Agoda", "TripAdvisor"];
   if (type === "restaurant") return ["Google", "Yelp", "Michelin", "TripAdvisor"];
@@ -229,6 +275,7 @@ function sendJson(res, status, payload) {
     const entry = writeCacheEntry(cacheWrite.key, payload, {
       source: cacheWrite.source,
       targetPlatforms: cacheWrite.targetPlatforms,
+      cacheScope: cacheWrite.cacheScope,
       platforms,
     });
     responsePayload = withCacheMetadata(payload, {
@@ -238,6 +285,7 @@ function sendJson(res, status, payload) {
           ? "refreshed-missing-platforms"
           : "stored",
       source: cacheWrite.source,
+      scope: cacheWrite.cacheScope,
       updatedAt: entry.updatedAt,
       platforms,
       missingPlatforms: getMissingPlatforms(payload, cacheWrite.targetPlatforms),
@@ -937,22 +985,45 @@ async function handleKnowBeforeYouGo(req, res, url) {
 
     const fallback = buildFallbackKnowBeforeYouGo(payload);
     const forceRefresh = url.searchParams.get("refresh") === "1" || req.headers["x-cache-refresh"] === "1";
-    const cacheKey = makeCacheKey({
+    const cacheOnly = url.searchParams.get("cacheOnly") === "1";
+    const cacheKey = getKnowBeforeCacheKey(payload);
+    const legacyCacheKey = makeCacheKey({
       kind: "know-before-you-go",
-      payload,
+      payload: getLegacyKnowBeforePayload(payload),
     });
-    const cached = getCacheEntry(cacheKey);
+    const cached = getCacheEntry(cacheKey) || (legacyCacheKey !== cacheKey ? getCacheEntry(legacyCacheKey) : null);
 
     if (cached && !forceRefresh) {
+      if (!getCacheEntry(cacheKey)) {
+        writeCacheEntry(cacheKey, cached.payload, {
+          source: "know-before-you-go",
+          cacheScope: "poi-identity",
+          migratedFrom: "payload",
+        });
+      }
+
       sendJson(
         res,
         200,
         withCacheMetadata(cached.payload, {
           status: "hit",
           source: "know-before-you-go",
+          scope: "poi-identity",
           updatedAt: cached.updatedAt,
         }),
       );
+      return;
+    }
+
+    if (cacheOnly) {
+      sendJson(res, 404, {
+        error: "Know Before You Go cache miss",
+        cache: {
+          status: "miss",
+          source: "know-before-you-go",
+          scope: "poi-identity",
+        },
+      });
       return;
     }
 
@@ -962,6 +1033,7 @@ async function handleKnowBeforeYouGo(req, res, url) {
       targetPlatforms: [],
       staleMissingPlatforms: [],
       forceRefresh,
+      cacheScope: "poi-identity",
     };
 
     if (!geminiApiKey) {
