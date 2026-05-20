@@ -1271,13 +1271,13 @@ function getKnowBeforeCacheIdentity(selected, merged) {
 }
 
 function getProviderEvidence() {
-  const selected = getFilteredPois().find((poi) => poi.id === state.selectedId);
+  const selected = findPoiById(state.selectedId);
   const merged = mergeProviderRatingsIntoPoi(selected);
   if (!merged) return null;
 
   const sourcePois = [
-    ...state.googlePois.filter((poi) => poi.id === selected.id),
-    ...state.explorePois.filter((poi) => poi.id === selected.id),
+    ...state.googlePois.filter((poi) => isSamePoiReference(poi, selected)),
+    ...state.explorePois.filter((poi) => isSamePoiReference(poi, selected)),
     ...state.tripAdvisorPois,
     ...state.tavilyPois,
     ...state.bravePois,
@@ -1516,12 +1516,44 @@ function renderSelectionPrompt() {
   `;
 }
 
-function getCurrentPois() {
-  return getFilteredPois();
+function getAllSelectablePois() {
+  const seen = new Set();
+  return [
+    ...state.googlePois,
+    ...state.explorePois,
+    ...state.tripAdvisorPois,
+    ...state.bookingPois,
+    ...state.yelpPois,
+    ...state.michelinPois,
+    ...state.geminiPois,
+    ...state.bravePois,
+    ...state.tavilyPois,
+    ...poiData,
+  ].filter((poi) => {
+    const key = poi.id || poi.placeId || `${poi.type}:${normalizeText(poi.name)}:${normalizeText(poi.city)}`;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isSamePoiReference(poi, target) {
+  if (!poi || !target) return false;
+  const poiIds = [poi.id, poi.placeId, poi.placeId ? `google-${poi.placeId}` : ""].filter(Boolean);
+  const targetIds = [target.id, target.placeId, target.placeId ? `google-${target.placeId}` : ""].filter(Boolean);
+  if (poiIds.some((id) => targetIds.includes(id))) return true;
+  return (
+    poi.type === target.type &&
+    normalizeText(poi.name) === normalizeText(target.name) &&
+    normalizeText(poi.city) === normalizeText(target.city)
+  );
 }
 
 function findPoiById(id) {
-  return getCurrentPois().find((poi) => poi.id === id);
+  if (!id) return undefined;
+  return getAllSelectablePois().find((poi) => {
+    return poi.id === id || poi.placeId === id || (poi.placeId && `google-${poi.placeId}` === id);
+  });
 }
 
 function getDefaultMaxScore(source) {
@@ -2660,16 +2692,18 @@ function render() {
 
   const pois = getFilteredPois();
   const isSearchMode = state.query.trim().length >= 2;
+  let selectedBasePoi = findPoiById(state.selectedId);
   if (!state.userSelectedPoi && !isSearchMode) {
     state.selectedId = null;
-  } else if (!pois.some((poi) => poi.id === state.selectedId)) {
+    selectedBasePoi = null;
+  } else if (state.selectedId && !selectedBasePoi) {
     state.selectedId = isSearchMode ? null : pois[0]?.id ?? null;
     state.userSelectedPoi = false;
     if (!state.selectedId) state.detailPageOpen = false;
+    selectedBasePoi = findPoiById(state.selectedId);
   }
 
   renderHome(pois);
-  const selectedBasePoi = pois.find((poi) => poi.id === state.selectedId);
   if (isSearchMode && pois.length && !selectedBasePoi) {
     renderSelectionPrompt();
   } else {
