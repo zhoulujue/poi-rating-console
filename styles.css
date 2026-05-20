@@ -456,9 +456,9 @@ h1 {
 }
 
 .trend-card {
-  display: grid;
-  grid-template-rows: 120px auto;
-  min-height: 250px;
+  display: block;
+  min-height: 300px;
+  background: #15120f;
   scroll-snap-align: start;
 }
 
@@ -485,12 +485,12 @@ h1 {
 .trend-media {
   --trend-image: linear-gradient(135deg, #f6ead4, #d5c0a4);
   --trend-overlay: linear-gradient(135deg, rgba(246, 234, 212, 0.46), rgba(74, 57, 38, 0.2));
-  position: relative;
-  min-height: 140px;
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   background-color: #d5c0a4;
   background-image:
-    linear-gradient(180deg, rgba(255, 253, 250, 0.08), rgba(24, 22, 18, 0.22)),
+    linear-gradient(180deg, rgba(255, 253, 250, 0.04), rgba(12, 10, 8, 0.72)),
     radial-gradient(circle at 22% 18%, rgba(255, 253, 250, 0.34), transparent 34%),
     var(--trend-overlay),
     var(--trend-image);
@@ -505,7 +505,7 @@ h1 {
   inset: 0;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 38%),
-    linear-gradient(0deg, rgba(31, 28, 24, 0.08), rgba(255, 253, 250, 0.02));
+    linear-gradient(0deg, rgba(18, 14, 10, 0.76), rgba(31, 28, 24, 0.12) 54%, rgba(255, 253, 250, 0.04));
   pointer-events: none;
 }
 
@@ -539,7 +539,13 @@ h1 {
 }
 
 .trend-body {
-  padding: 14px;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 300px;
+  padding: 24px 26px;
 }
 
 .recommendation-body h3,
@@ -550,6 +556,13 @@ h1 {
   line-height: 1.25;
 }
 
+.trend-body h3 {
+  color: #fff;
+  font-size: 32px;
+  line-height: 1.05;
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.38);
+}
+
 .recommendation-body p,
 .trend-body p {
   margin-bottom: 12px;
@@ -558,10 +571,22 @@ h1 {
   line-height: 1.45;
 }
 
+.trend-body p {
+  color: rgba(255, 255, 255, 0.84);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.34);
+}
+
 .home-card-tags {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.trend-body .tag {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(10px);
 }
 
 .trending-grid {

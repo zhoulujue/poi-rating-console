@@ -1753,16 +1753,29 @@ function renderRecommendationCard(item, index, className) {
   const mediaClass = isTrend ? "trend-media" : "recommendation-media";
   const bodyClass = isTrend ? "trend-body" : "recommendation-body";
   const mediaStyle = item.imageUrl ? ` style="--trend-image: url('${escapeHtml(item.imageUrl)}')"` : "";
+  const bodyMarkup = `
+    <div class="${bodyClass}">
+      <h3>${escapeHtml(item.title)}</h3>
+      <p>${escapeHtml(item.description)}</p>
+      <div class="home-card-tags">${tags}</div>
+    </div>
+  `;
+
+  if (isTrend) {
+    return `
+      <button type="button" class="${className}" data-home-query="${escapeHtml(item.query)}" data-home-scene="${escapeHtml(item.scene || item.tags?.[0] || "")}">
+        <div class="${mediaClass} tone-${(index % 4) + 1}" aria-hidden="true"${mediaStyle}></div>
+        ${bodyMarkup}
+      </button>
+    `;
+  }
+
   return `
     <button type="button" class="${className}" data-home-query="${escapeHtml(item.query)}" data-home-scene="${escapeHtml(item.scene || item.tags?.[0] || "")}">
       <div class="${mediaClass} tone-${(index % 4) + 1}" aria-hidden="true"${mediaStyle}>
         ${item.icon ? `<span>${escapeHtml(item.icon)}</span>` : ""}
       </div>
-      <div class="${bodyClass}">
-        <h3>${escapeHtml(item.title)}</h3>
-        <p>${escapeHtml(item.description)}</p>
-        <div class="home-card-tags">${tags}</div>
-      </div>
+      ${bodyMarkup}
     </button>
   `;
 }
