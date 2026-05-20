@@ -1105,8 +1105,28 @@ function getProviderSearchParams(lookup, type) {
 
 function getGeminiPlatformsForType(type) {
   if (type === "hotel") return ["Booking", "Agoda"];
-  if (type === "restaurant") return ["Yelp", "Michelin"];
+  if (type === "restaurant") return ["Yelp"];
   return [];
+}
+
+function stripSearchFallbackMichelinRatings(pois = []) {
+  return pois
+    .map((poi) => {
+      const rating = poi?.ratings?.Michelin;
+      if (!rating || !["gemini", "brave", "tavily"].includes(rating.source)) {
+        return poi;
+      }
+
+      const ratings = { ...poi.ratings };
+      delete ratings.Michelin;
+
+      return {
+        ...poi,
+        ratings,
+        tags: (poi.tags || []).filter((tag) => tag !== "Michelin"),
+      };
+    })
+    .filter((poi) => Object.keys(poi?.ratings || {}).length);
 }
 
 function resetGeminiPlatformStatus(type, status, message = "") {
@@ -2022,7 +2042,7 @@ function searchGeminiRatings(batchId) {
         throw new Error(payload.warning);
       }
 
-      state.geminiPois = payload.data || [];
+      state.geminiPois = stripSearchFallbackMichelinRatings(payload.data || []);
       state.geminiStatus = "ready";
       state.geminiError = "";
       maybeRetryGoogleWithLocationHints();
@@ -2114,7 +2134,7 @@ function searchBraveRatings(batchId) {
         throw new Error(payload.warning);
       }
 
-      state.bravePois = payload.data || [];
+      state.bravePois = stripSearchFallbackMichelinRatings(payload.data || []);
       state.braveStatus = "ready";
       state.braveError = "";
       maybeRetryGoogleWithLocationHints();
@@ -2210,7 +2230,7 @@ function searchTavilyRatings(batchId) {
         throw new Error(payload.warning);
       }
 
-      state.tavilyPois = payload.data || [];
+      state.tavilyPois = stripSearchFallbackMichelinRatings(payload.data || []);
       state.tavilyStatus = "ready";
       state.tavilyError = "";
       maybeRetryGoogleWithLocationHints();

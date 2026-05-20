@@ -294,6 +294,33 @@ function getProviderTargetPlatforms(source, type) {
   return [];
 }
 
+const SEARCH_FALLBACK_SOURCES = new Set(["brave", "tavily", "gemini"]);
+
+function sanitizeProviderPayloadForSource(payload, source) {
+  if (!SEARCH_FALLBACK_SOURCES.has(source) || !payload || typeof payload !== "object" || !Array.isArray(payload.data)) {
+    return payload;
+  }
+
+  let changed = false;
+  const data = payload.data
+    .map((poi) => {
+      if (!poi?.ratings?.Michelin) return poi;
+
+      changed = true;
+      const ratings = { ...poi.ratings };
+      delete ratings.Michelin;
+
+      return {
+        ...poi,
+        ratings,
+        tags: toArray(poi.tags).filter((tag) => tag !== "Michelin"),
+      };
+    })
+    .filter((poi) => Object.keys(poi?.ratings || {}).length);
+
+  return changed ? { ...payload, data } : payload;
+}
+
 function ratingHasUsableValue(rating) {
   if (!rating) return false;
   if (rating.label) return true;
@@ -388,14 +415,15 @@ function maybeServeCachedProvider(res, url, source) {
   const directEntry = getCacheEntry(key);
   const legacyEntry = legacyKey !== key ? getCacheEntry(legacyKey) : null;
   const entry = directEntry || legacyEntry;
+  const cachedPayload = entry ? sanitizeProviderPayloadForSource(entry.payload, source) : null;
 
-  if (entry && providerCacheIsUsable(entry.payload, targetPlatforms)) {
+  if (entry && providerCacheIsUsable(cachedPayload, targetPlatforms)) {
     if (!directEntry) {
-      writeCacheEntry(key, entry.payload, {
+      writeCacheEntry(key, cachedPayload, {
         source,
         targetPlatforms,
         cacheScope,
-        platforms: getPayloadPlatforms(entry.payload),
+        platforms: getPayloadPlatforms(cachedPayload),
         migratedFrom: "request",
       });
     }
@@ -403,12 +431,12 @@ function maybeServeCachedProvider(res, url, source) {
     sendJson(
       res,
       200,
-      withCacheMetadata(entry.payload, {
+      withCacheMetadata(cachedPayload, {
         status: "hit",
         source,
         scope: cacheScope,
         updatedAt: entry.updatedAt,
-        platforms: getPayloadPlatforms(entry.payload),
+        platforms: getPayloadPlatforms(cachedPayload),
       }),
     );
     return true;
@@ -419,7 +447,7 @@ function maybeServeCachedProvider(res, url, source) {
     serveInflightCacheWrite(res, inflight, {
       source,
       scope: cacheScope,
-      platforms: entry ? getPayloadPlatforms(entry.payload) : [],
+      platforms: cachedPayload ? getPayloadPlatforms(cachedPayload) : [],
     });
     return true;
   }
@@ -428,7 +456,7 @@ function maybeServeCachedProvider(res, url, source) {
     key,
     source,
     targetPlatforms,
-    staleMissingPlatforms: entry ? getMissingPlatforms(entry.payload, targetPlatforms) : [],
+    staleMissingPlatforms: cachedPayload ? getMissingPlatforms(cachedPayload, targetPlatforms) : [],
     cacheScope,
   };
   startInflightCacheWrite(key);
@@ -440,14 +468,15 @@ function sendJson(res, status, payload) {
   let responsePayload = payload;
 
   if (cacheWrite && status >= 200 && status < 300) {
-    const platforms = getPayloadPlatforms(payload);
-    const entry = writeCacheEntry(cacheWrite.key, payload, {
+    responsePayload = sanitizeProviderPayloadForSource(payload, cacheWrite.source);
+    const platforms = getPayloadPlatforms(responsePayload);
+    const entry = writeCacheEntry(cacheWrite.key, responsePayload, {
       source: cacheWrite.source,
       targetPlatforms: cacheWrite.targetPlatforms,
       cacheScope: cacheWrite.cacheScope,
       platforms,
     });
-    responsePayload = withCacheMetadata(payload, {
+    responsePayload = withCacheMetadata(responsePayload, {
       status: cacheWrite.forceRefresh
         ? "refreshed"
         : cacheWrite.staleMissingPlatforms?.length
@@ -457,7 +486,7 @@ function sendJson(res, status, payload) {
       scope: cacheWrite.cacheScope,
       updatedAt: entry.updatedAt,
       platforms,
-      missingPlatforms: getMissingPlatforms(payload, cacheWrite.targetPlatforms),
+      missingPlatforms: getMissingPlatforms(responsePayload, cacheWrite.targetPlatforms),
       previousMissingPlatforms: cacheWrite.staleMissingPlatforms,
     });
     resolveInflightCacheWrite(cacheWrite.key, entry);
@@ -1609,8 +1638,8 @@ ${JSON.stringify(payload, null, 2)}
 
 function getGeminiPlatforms(type) {
   if (type === "hotel") return ["Booking", "Agoda"];
-  if (type === "restaurant") return ["Yelp", "Michelin"];
-  return ["Booking", "Agoda", "Yelp", "Michelin"];
+  if (type === "restaurant") return ["Yelp"];
+  return ["Booking", "Agoda", "Yelp"];
 }
 
 function normalizeGeminiRating(rating, platform) {
@@ -2085,15 +2114,14 @@ Return ONLY valid JSON in this exact shape:
   "ratings": {
     "Booking": { "score": 9.1, "max": 10, "reviews": 1234, "sourceUrl": "https://..." },
     "Agoda": { "score": 8.8, "max": 10, "reviews": 1234, "sourceUrl": "https://..." },
-    "Yelp": { "score": 4.5, "max": 5, "reviews": 1234, "sourceUrl": "https://..." },
-    "Michelin": { "score": 1, "max": 3, "label": "1 Star", "reviews": null, "sourceUrl": "https://..." }
+    "Yelp": { "score": 4.5, "max": 5, "reviews": 1234, "sourceUrl": "https://..." }
   }
 }
 
 Rules:
 - Include only platforms where you found credible public evidence.
 - Do not guess ratings.
-- For Michelin, use score 0 with label "Selected" or "Bib Gourmand" if applicable.
+- Do not return Michelin ratings. Michelin is handled by the local michelin-my-maps dataset.
 - Put the direct or most relevant source URL in sourceUrl.
 `;
 
