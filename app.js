@@ -1189,8 +1189,6 @@ function renderSelectionPrompt() {
     <div class="empty-state">
       <div class="empty-visual" aria-hidden="true">
         <span></span>
-        <span></span>
-        <span></span>
       </div>
       <h2>选择一个 POI</h2>
       <p>从 AI Picks、Near You 或 Trending 中选择一个地点后，我会继续查询各平台评分和 Know Before You Go。</p>
