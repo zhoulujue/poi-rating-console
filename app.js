@@ -191,6 +191,13 @@ const poiData = [
 ];
 
 const savedHomeLocation = loadHomeLocation();
+const DEFAULT_HOME_LOCATION = {
+  city: "New York",
+  district: "Manhattan",
+  label: "Manhattan, NY",
+  lat: 40.7685167,
+  lng: -73.9821938,
+};
 
 const state = {
   query: "",
@@ -200,15 +207,16 @@ const state = {
   detailPageOpen: false,
   listScrollY: 0,
   pendingDetailScroll: false,
+  activeTab: "discover",
   selectedScene: "",
   homeSearchStatus: "idle",
   homeSearchError: "",
-  homeCity: savedHomeLocation.city || "New York",
-  homeDistrict: savedHomeLocation.district || "Manhattan",
+  homeCity: savedHomeLocation.city || DEFAULT_HOME_LOCATION.city,
+  homeDistrict: savedHomeLocation.district || DEFAULT_HOME_LOCATION.district,
   homeLocationLabel: savedHomeLocation.label || "",
   homeLocationPlaceId: savedHomeLocation.placeId || "",
-  homeLocationLat: savedHomeLocation.lat ?? null,
-  homeLocationLng: savedHomeLocation.lng ?? null,
+  homeLocationLat: savedHomeLocation.lat ?? DEFAULT_HOME_LOCATION.lat,
+  homeLocationLng: savedHomeLocation.lng ?? DEFAULT_HOME_LOCATION.lng,
   homeTransit: "",
   homeDistance: "",
   cityPickerOpen: false,
@@ -216,6 +224,13 @@ const state = {
   citySearchStatus: "idle",
   citySearchError: "",
   cityPredictions: [],
+  exploreStatus: "idle",
+  exploreError: "",
+  exploreSearchQuery: "",
+  explorePredictions: [],
+  explorePois: [],
+  exploreSearchSignature: "",
+  isSearchingExploreNearby: false,
   aiIntent: null,
   aiCandidates: [],
   providerLookup: null,
@@ -290,6 +305,12 @@ const elements = {
   aiStatus: document.querySelector("#aiStatus"),
   intentBar: document.querySelector("#intentBar"),
   aiResultsSection: document.querySelector("#aiResultsSection"),
+  exploreView: document.querySelector("#exploreView"),
+  exploreMap: document.querySelector("#exploreMap"),
+  exploreSearchForm: document.querySelector("#exploreSearchForm"),
+  exploreSearchInput: document.querySelector("#exploreSearchInput"),
+  exploreStatus: document.querySelector("#exploreStatus"),
+  exploreSuggestions: document.querySelector("#exploreSuggestions"),
   nearYouCity: document.querySelector("#nearYouCity"),
   nearYouRail: document.querySelector("#nearYouRail"),
   trendingCity: document.querySelector("#trendingCity"),
@@ -313,10 +334,15 @@ const elements = {
 
 let googlePlacesService = null;
 let googleAutocompleteService = null;
+let exploreMap = null;
+let exploreMarkers = [];
 let googleSearchTimer = null;
 let googleSearchToken = 0;
 let citySearchTimer = null;
 let citySearchToken = 0;
+let exploreSearchTimer = null;
+let exploreSearchToken = 0;
+let exploreMapSearchToken = 0;
 let googleFallbackTimer = null;
 let homeSearchToken = 0;
 let tripAdvisorSearchTimer = null;
@@ -734,7 +760,17 @@ function mergeProviderRatingsIntoPoi(basePoi) {
 function mergeLivePois() {
   const merged = new Map();
 
-  [...state.googlePois, ...state.tripAdvisorPois, ...state.bookingPois, ...state.yelpPois, ...state.michelinPois, ...state.geminiPois, ...state.bravePois, ...state.tavilyPois].forEach((poi) => {
+  [
+    ...state.googlePois,
+    ...state.explorePois,
+    ...state.tripAdvisorPois,
+    ...state.bookingPois,
+    ...state.yelpPois,
+    ...state.michelinPois,
+    ...state.geminiPois,
+    ...state.bravePois,
+    ...state.tavilyPois,
+  ].forEach((poi) => {
     const key = getPoiMergeKey(poi);
     const existing = merged.get(key);
 
@@ -762,7 +798,7 @@ function getFilteredPois() {
   const query = state.query.trim().toLowerCase();
   const normalizedQuery = normalizeText(state.query);
   if (query.length >= 2) {
-    return state.googlePois
+    return dedupeExplorePois([...state.googlePois, ...state.explorePois])
       .filter((poi) => state.type === "all" || poi.type === state.type)
       .sort((a, b) => getPoiRank(b, normalizedQuery) - getPoiRank(a, normalizedQuery))
       .map(applyUserRatings);
@@ -802,7 +838,7 @@ function selectPoi(id) {
   state.userSelectedPoi = true;
   state.pendingDetailScroll = true;
   openDetailPageForCompact(id);
-  const selectedPoi = getFilteredPois().find((poi) => poi.id === id);
+  const selectedPoi = findPoiById(id);
   const cacheIdentity = selectedPoi ? getKnowBeforeCacheIdentity(selectedPoi, selectedPoi) : null;
   state.providerLookup = selectedPoi
     ? {
@@ -1159,6 +1195,7 @@ function getProviderEvidence() {
 
   const sourcePois = [
     ...state.googlePois.filter((poi) => poi.id === selected.id),
+    ...state.explorePois.filter((poi) => poi.id === selected.id),
     ...state.tripAdvisorPois,
     ...state.tavilyPois,
     ...state.bravePois,
@@ -2020,6 +2057,7 @@ async function selectCityPrediction(placeId) {
     state.homeLocationLat = nextLocation.lat;
     state.homeLocationLng = nextLocation.lng;
     saveHomeLocation();
+    resetExploreForLocationChange();
     closeCityPicker();
     if (shouldRefreshSearch) {
       runHomeSearch(state.query);
@@ -2028,6 +2066,361 @@ async function selectCityPrediction(placeId) {
     if (token !== citySearchToken) return;
     state.citySearchStatus = "error";
     state.citySearchError = getFriendlySearchError(error);
+    render();
+  }
+}
+
+function setActiveHomeTab(tab) {
+  state.activeTab = tab;
+  elements.mobileTabbar?.querySelectorAll("button[data-home-nav]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.homeNav === tab);
+  });
+}
+
+function getExploreCenter() {
+  return {
+    lat: Number.isFinite(state.homeLocationLat) ? state.homeLocationLat : DEFAULT_HOME_LOCATION.lat,
+    lng: Number.isFinite(state.homeLocationLng) ? state.homeLocationLng : DEFAULT_HOME_LOCATION.lng,
+  };
+}
+
+function getExploreLocationText() {
+  return getHomeLocationDisplay(getHomeFilters()).replace(/^📍\s*/, "");
+}
+
+function getExploreSignature() {
+  const center = getExploreCenter();
+  return [
+    normalizeText(state.homeCity),
+    normalizeText(state.homeDistrict),
+    center.lat.toFixed(4),
+    center.lng.toFixed(4),
+  ].join(":");
+}
+
+function clearExploreMarkers() {
+  exploreMarkers.forEach((marker) => marker.setMap(null));
+  exploreMarkers = [];
+}
+
+function resetExploreForLocationChange() {
+  state.exploreSearchSignature = "";
+  state.explorePois = [];
+  state.isSearchingExploreNearby = false;
+  clearExploreMarkers();
+}
+
+function getExplorePlaceFields() {
+  return ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos", "geometry"];
+}
+
+function getExplorePredictionParts(prediction) {
+  return getCityPredictionParts(prediction);
+}
+
+function addExplorePoi(poi) {
+  if (!poi) return null;
+  const key = poi.placeId || poi.id || `${poi.type}:${normalizeText(poi.name)}:${normalizeText(poi.city)}`;
+  const nextPois = state.explorePois.filter((item) => {
+    const itemKey = item.placeId || item.id || `${item.type}:${normalizeText(item.name)}:${normalizeText(item.city)}`;
+    return itemKey !== key;
+  });
+  state.explorePois = [poi, ...nextPois].slice(0, 48);
+  return poi;
+}
+
+function dedupeExplorePois(pois) {
+  const seen = new Set();
+  return pois.filter((poi) => {
+    const key = poi.placeId || `${poi.type}:${normalizeText(poi.name)}:${normalizeText(poi.city)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function ensureExploreMap() {
+  if (state.activeTab !== "explore" || !elements.exploreMap || !window.google?.maps) return null;
+  const center = getExploreCenter();
+
+  if (!exploreMap) {
+    exploreMap = new google.maps.Map(elements.exploreMap, {
+      center,
+      zoom: state.homeDistrict ? 14 : 12,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+      clickableIcons: true,
+      gestureHandling: "greedy",
+    });
+  } else {
+    google.maps.event.trigger(exploreMap, "resize");
+    exploreMap.setCenter(center);
+  }
+
+  return exploreMap;
+}
+
+function renderExploreMarkers() {
+  if (!exploreMap || !window.google?.maps) return;
+  clearExploreMarkers();
+
+  state.explorePois.forEach((poi) => {
+    if (!Number.isFinite(poi.lat) || !Number.isFinite(poi.lng)) return;
+    const isHotel = poi.type === "hotel";
+    const marker = new google.maps.Marker({
+      map: exploreMap,
+      position: { lat: poi.lat, lng: poi.lng },
+      title: poi.name,
+      label: {
+        text: isHotel ? "H" : "R",
+        color: "#fff",
+        fontWeight: "900",
+        fontSize: "12px",
+      },
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 13,
+        fillColor: isHotel ? "#315b9d" : "#1d6f5f",
+        fillOpacity: 1,
+        strokeColor: "#fffdfa",
+        strokeWeight: 3,
+      },
+      zIndex: isHotel ? 20 : 30,
+    });
+    marker.addListener("click", () => {
+      addExplorePoi(poi);
+      selectPoi(poi.id);
+    });
+    exploreMarkers.push(marker);
+  });
+}
+
+function prepareExploreMap() {
+  if (state.activeTab !== "explore") return;
+  if (!googlePlacesService || !window.google?.maps) {
+    if (state.exploreStatus !== "loading") {
+      state.exploreStatus = "loading";
+      state.exploreError = "";
+      render();
+    }
+    return;
+  }
+
+  ensureExploreMap();
+  if (!exploreMap) return;
+  const signature = getExploreSignature();
+  if (state.exploreSearchSignature === signature && state.explorePois.length) {
+    renderExploreMarkers();
+    return;
+  }
+  if (state.isSearchingExploreNearby && state.exploreSearchSignature === signature) return;
+
+  searchExploreNearby();
+}
+
+async function searchExploreNearby({ force = false } = {}) {
+  if (!googlePlacesService || !window.google?.maps) return;
+  const signature = getExploreSignature();
+  if (!force && state.exploreSearchSignature === signature && state.explorePois.length) {
+    renderExploreMarkers();
+    return;
+  }
+
+  const token = ++exploreMapSearchToken;
+  const center = getExploreCenter();
+  const location = new google.maps.LatLng(center.lat, center.lng);
+  const locationText = getExploreLocationText();
+  state.exploreSearchSignature = signature;
+  state.exploreStatus = "loading";
+  state.exploreError = "";
+  state.isSearchingExploreNearby = true;
+  render();
+
+  try {
+    const baseRequest = {
+      location,
+      radius: 50000,
+      fields: getExplorePlaceFields(),
+    };
+    const [restaurants, hotels] = await Promise.all([
+      runGoogleTextSearch({
+        ...baseRequest,
+        query: `restaurants in ${locationText}`,
+        type: "restaurant",
+      }),
+      runGoogleTextSearch({
+        ...baseRequest,
+        query: `hotels in ${locationText}`,
+        type: "lodging",
+      }),
+    ]);
+
+    if (token !== exploreMapSearchToken) return;
+
+    const nextPois = [
+      ...((restaurants.status === google.maps.places.PlacesServiceStatus.OK && restaurants.results) || []),
+      ...((hotels.status === google.maps.places.PlacesServiceStatus.OK && hotels.results) || []),
+    ]
+      .slice(0, 36)
+      .map(mapGooglePlaceToPoi)
+      .filter((poi) => poi.type === "restaurant" || poi.type === "hotel");
+
+    state.explorePois = dedupeExplorePois(nextPois);
+    state.exploreStatus = "ready";
+    state.exploreError = "";
+    state.isSearchingExploreNearby = false;
+    render();
+    requestAnimationFrame(() => {
+      ensureExploreMap();
+      renderExploreMarkers();
+    });
+  } catch (error) {
+    if (token !== exploreMapSearchToken) return;
+    state.explorePois = [];
+    state.exploreStatus = "error";
+    state.exploreError = getFriendlySearchError(error);
+    state.isSearchingExploreNearby = false;
+    render();
+  }
+}
+
+function renderExploreState() {
+  const active = state.activeTab === "explore";
+  elements.homeView?.classList.toggle("is-explore", active);
+  elements.exploreView.hidden = !active;
+  elements.contentGrid?.classList.toggle("is-explore", active && !(state.userSelectedPoi && state.selectedId));
+  elements.mobileTabbar?.querySelectorAll("button[data-home-nav]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.homeNav === state.activeTab);
+  });
+
+  if (!active) return;
+
+  if (elements.exploreSearchInput && document.activeElement !== elements.exploreSearchInput) {
+    elements.exploreSearchInput.value = state.exploreSearchQuery;
+  }
+
+  const statusLabels = {
+    idle: "正在准备地图...",
+    loading: "正在加载附近餐厅和酒店...",
+    searching: "正在搜索 Google Maps...",
+    ready: state.explorePredictions.length
+      ? ""
+      : `${state.explorePois.length || 0} 个地点 · ${getExploreLocationText()}`,
+    error: state.exploreError || "Explore 暂时不可用。",
+  };
+
+  if (elements.exploreStatus) {
+    elements.exploreStatus.textContent = statusLabels[state.exploreStatus] || "";
+    elements.exploreStatus.classList.toggle("is-error", state.exploreStatus === "error");
+  }
+
+  if (elements.exploreSuggestions) {
+    elements.exploreSuggestions.hidden = !state.explorePredictions.length;
+    elements.exploreSuggestions.innerHTML = state.explorePredictions
+      .map((prediction) => {
+        const { main, secondary } = getExplorePredictionParts(prediction);
+        return `
+          <button type="button" class="explore-suggestion-button" data-explore-place-id="${escapeHtml(prediction.place_id)}">
+            <span>
+              <span class="explore-suggestion-main">${escapeHtml(main)}</span>
+              ${secondary ? `<span class="explore-suggestion-secondary">${escapeHtml(secondary)}</span>` : ""}
+            </span>
+            <span class="explore-suggestion-arrow" aria-hidden="true">→</span>
+          </button>
+        `;
+      })
+      .join("");
+  }
+
+  requestAnimationFrame(prepareExploreMap);
+}
+
+function scheduleExploreSearch() {
+  clearTimeout(exploreSearchTimer);
+  const query = elements.exploreSearchInput?.value.trim() || "";
+  state.exploreSearchQuery = query;
+
+  if (query.length < 2) {
+    state.explorePredictions = [];
+    state.exploreError = "";
+    state.exploreStatus = state.explorePois.length ? "ready" : "idle";
+    render();
+    return;
+  }
+
+  state.exploreStatus = "searching";
+  state.exploreError = "";
+  render();
+  exploreSearchTimer = setTimeout(() => searchExplorePredictions(query), 180);
+}
+
+async function searchExplorePredictions(query) {
+  const token = ++exploreSearchToken;
+
+  if (!googleAutocompleteService) {
+    state.explorePredictions = [];
+    state.exploreStatus = "error";
+    state.exploreError = state.googleError || "Google Maps 搜索尚未连接。";
+    render();
+    return;
+  }
+
+  try {
+    const center = getExploreCenter();
+    const { predictions, status } = await getGooglePredictions(query, {
+      types: null,
+      location: new google.maps.LatLng(center.lat, center.lng),
+      radius: 50000,
+    });
+    if (token !== exploreSearchToken) return;
+
+    if (status !== google.maps.places.PlacesServiceStatus.OK && status !== google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+      throw new Error(`Google Maps 返回 ${status}`);
+    }
+
+    state.explorePredictions = (predictions || []).slice(0, 7);
+    state.exploreStatus = "ready";
+    state.exploreError = "";
+  } catch (error) {
+    if (token !== exploreSearchToken) return;
+    state.explorePredictions = [];
+    state.exploreStatus = "error";
+    state.exploreError = getFriendlySearchError(error);
+  } finally {
+    if (token === exploreSearchToken) render();
+  }
+}
+
+async function selectExplorePrediction(placeId) {
+  if (!placeId || !googlePlacesService) return;
+  const token = ++exploreSearchToken;
+  state.exploreStatus = "searching";
+  state.exploreError = "";
+  render();
+
+  try {
+    const { place, status } = await getGooglePlaceDetails(placeId, getExplorePlaceFields());
+    if (token !== exploreSearchToken) return;
+
+    if (status !== google.maps.places.PlacesServiceStatus.OK || !place) {
+      throw new Error(`Google Maps 返回 ${status}`);
+    }
+
+    const poi = addExplorePoi(mapGooglePlaceToPoi(place));
+    state.exploreSearchQuery = poi.name;
+    state.explorePredictions = [];
+    state.exploreStatus = "ready";
+    if (Number.isFinite(poi.lat) && Number.isFinite(poi.lng) && exploreMap) {
+      exploreMap.setCenter({ lat: poi.lat, lng: poi.lng });
+      exploreMap.setZoom(16);
+    }
+    render();
+    selectPoi(poi.id);
+  } catch (error) {
+    if (token !== exploreSearchToken) return;
+    state.exploreStatus = "error";
+    state.exploreError = getFriendlySearchError(error);
     render();
   }
 }
@@ -2163,6 +2556,7 @@ function renderHomeSearchState(pois) {
 function renderHome(pois) {
   renderHomeFeeds();
   renderHomeSearchState(pois);
+  renderExploreState();
 }
 
 function render() {
@@ -2226,6 +2620,7 @@ function mapGooglePlaceToPoi(place) {
       ? addressParts.at(-3)
       : addressParts.at(-2) || addressParts.at(-1) || "Google Places";
   const photoUrl = place.photos?.[0]?.getUrl({ maxWidth: 640, maxHeight: 420 });
+  const { lat, lng } = normalizeLatLng(place.geometry?.location);
 
   return {
     id: `google-${place.place_id}`,
@@ -2238,6 +2633,8 @@ function mapGooglePlaceToPoi(place) {
     description: "来自 Google Places 的实时搜索结果。其他平台评分需要分别接入对应来源后展示。",
     price: place.price_level ? `${"$".repeat(place.price_level)} · Google 价格等级` : "暂无价格等级",
     tags: ["Google", "实时结果"],
+    lat,
+    lng,
     photoUrl,
     ratings: {
       Google: {
@@ -2330,6 +2727,9 @@ function initializePlacesService() {
   if (pendingCityQuery) {
     searchCitiesWithGoogle(pendingCityQuery);
   }
+  if (state.activeTab === "explore") {
+    requestAnimationFrame(prepareExploreMap);
+  }
   if (state.homeSearchStatus === "idle") {
     searchGooglePlaces();
   }
@@ -2395,11 +2795,14 @@ function getGooglePredictions(input, options = {}) {
 
     const request = {
       input,
-      types: options.types || ["establishment"],
     };
+    const types = Object.hasOwn(options, "types") ? options.types : ["establishment"];
+    if (types?.length) request.types = types;
     if (options.componentRestrictions) {
       request.componentRestrictions = options.componentRestrictions;
     }
+    if (options.location) request.location = options.location;
+    if (options.radius) request.radius = options.radius;
 
     googleAutocompleteService.getPlacePredictions(request, (predictions, status) => {
       resolve({ predictions: predictions || [], status });
@@ -2407,7 +2810,10 @@ function getGooglePredictions(input, options = {}) {
   });
 }
 
-function getGooglePlaceDetails(placeId, fields = ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos"]) {
+function getGooglePlaceDetails(
+  placeId,
+  fields = ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos", "geometry"],
+) {
   return new Promise((resolve) => {
     googlePlacesService.getDetails(
       {
@@ -3283,6 +3689,39 @@ elements.citySearchResults?.addEventListener("click", (event) => {
   selectCityPrediction(button.dataset.cityPlaceId);
 });
 
+elements.exploreSearchForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const firstPrediction = state.explorePredictions[0];
+  if (firstPrediction?.place_id) {
+    selectExplorePrediction(firstPrediction.place_id);
+    return;
+  }
+  scheduleExploreSearch();
+});
+
+elements.exploreSearchInput?.addEventListener("input", scheduleExploreSearch);
+
+elements.exploreSearchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    state.exploreSearchQuery = "";
+    state.explorePredictions = [];
+    state.exploreStatus = state.explorePois.length ? "ready" : "idle";
+    elements.exploreSearchInput.value = "";
+    render();
+  }
+
+  if (event.key === "Enter" && state.explorePredictions[0]?.place_id) {
+    event.preventDefault();
+    selectExplorePrediction(state.explorePredictions[0].place_id);
+  }
+});
+
+elements.exploreSuggestions?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-explore-place-id]");
+  if (!button) return;
+  selectExplorePrediction(button.dataset.explorePlaceId);
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.cityPickerOpen) {
     closeCityPicker();
@@ -3346,11 +3785,8 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-home-nav]");
   if (!button) return;
 
-  elements.mobileTabbar.querySelectorAll("button").forEach((item) => {
-    item.classList.toggle("is-active", item === button);
-  });
-
   if (button.dataset.homeNav === "discover") {
+    setActiveHomeTab("discover");
     state.query = "";
     state.homeSearchStatus = "idle";
     state.homeSearchError = "";
@@ -3366,6 +3802,18 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
     return;
   }
 
+  if (button.dataset.homeNav === "explore") {
+    setActiveHomeTab("explore");
+    state.userSelectedPoi = false;
+    state.selectedId = null;
+    state.detailPageOpen = false;
+    replaceListHistoryState();
+    render();
+    requestAnimationFrame(prepareExploreMap);
+    return;
+  }
+
+  setActiveHomeTab(button.dataset.homeNav || "discover");
   elements.searchInput.focus();
 });
 

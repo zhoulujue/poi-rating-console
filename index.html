@@ -131,6 +131,23 @@
               <div class="trending-grid" id="trendingGrid"></div>
             </section>
 
+            <section class="explore-view" id="exploreView" hidden aria-label="Explore map">
+              <div class="explore-map-shell">
+                <div class="explore-search-layer">
+                  <form class="explore-search-card" id="exploreSearchForm">
+                    <label class="home-search-field explore-search-field" aria-label="Search Google Maps">
+                      <span class="search-glyph" aria-hidden="true"></span>
+                      <input id="exploreSearchInput" type="search" placeholder="Search Google Maps" autocomplete="off" />
+                      <button type="submit" id="exploreSearchButton" aria-label="Search">→</button>
+                    </label>
+                    <p class="explore-status" id="exploreStatus"></p>
+                    <div class="explore-suggestions" id="exploreSuggestions" hidden></div>
+                  </form>
+                </div>
+                <div class="explore-map" id="exploreMap" aria-label="Google Maps Explore"></div>
+              </div>
+            </section>
+
           </section>
 
           <section class="detail-panel" aria-live="polite">

@@ -343,7 +343,8 @@ h1 {
   box-shadow: 0 0 0 4px rgba(29, 111, 95, 0.12);
 }
 
-#homeSearchButton {
+#homeSearchButton,
+#exploreSearchButton {
   display: inline-grid;
   place-items: center;
   width: 54px;
@@ -547,6 +548,157 @@ h1 {
 }
 
 .city-result-arrow {
+  color: var(--accent-strong);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.content-grid.is-explore {
+  grid-template-columns: 1fr;
+}
+
+.content-grid.is-explore .detail-panel {
+  display: none;
+}
+
+.home-panel.is-explore {
+  min-height: calc(100vh - 56px - 104px);
+  padding: 0;
+}
+
+.home-panel.is-explore.has-results {
+  padding: 0;
+}
+
+.home-panel.is-explore .home-app-header,
+.home-panel.is-explore .home-search-card,
+.home-panel.is-explore .scene-pills,
+.home-panel.is-explore #aiStatus,
+.home-panel.is-explore .home-section {
+  display: none;
+}
+
+.explore-view[hidden],
+.explore-suggestions[hidden] {
+  display: none;
+}
+
+.explore-view {
+  min-height: inherit;
+}
+
+.explore-map-shell {
+  position: relative;
+  min-height: inherit;
+  height: calc(100vh - 56px - 104px);
+  overflow: hidden;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(29, 111, 95, 0.12), transparent 36%),
+    #e8ece6;
+}
+
+.explore-map {
+  position: absolute;
+  inset: 0;
+  background: #e8ece6;
+}
+
+.explore-search-layer {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  left: 24px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.explore-search-card {
+  width: min(640px, 100%);
+  margin: 0 auto;
+  pointer-events: auto;
+}
+
+.explore-search-field {
+  min-height: 66px;
+  border-radius: 999px;
+  background: rgba(255, 253, 250, 0.93);
+  box-shadow: 0 18px 50px rgba(31, 45, 42, 0.18);
+  backdrop-filter: blur(14px);
+}
+
+.explore-status {
+  min-height: 22px;
+  margin: 10px 18px 0;
+  color: #4f5d55;
+  font-size: 13px;
+  font-weight: 800;
+  text-shadow: 0 1px 8px rgba(255, 253, 250, 0.9);
+}
+
+.explore-status.is-error {
+  color: #8a4b00;
+}
+
+.explore-suggestions {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid rgba(220, 227, 220, 0.88);
+  border-radius: 20px;
+  background: rgba(255, 253, 250, 0.95);
+  box-shadow: 0 18px 48px rgba(31, 45, 42, 0.16);
+  backdrop-filter: blur(14px);
+}
+
+.explore-suggestion-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+
+.explore-suggestion-button:hover,
+.explore-suggestion-button:focus-visible {
+  border-color: rgba(29, 111, 95, 0.25);
+  background: #f5faf6;
+}
+
+.explore-suggestion-button:focus-visible {
+  outline: 3px solid rgba(29, 111, 95, 0.14);
+  outline-offset: 2px;
+}
+
+.explore-suggestion-main,
+.explore-suggestion-secondary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explore-suggestion-main {
+  font-size: 15px;
+  font-weight: 860;
+}
+
+.explore-suggestion-secondary {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.explore-suggestion-arrow {
   color: var(--accent-strong);
   font-size: 22px;
   font-weight: 900;
@@ -1773,7 +1925,8 @@ h1 {
     overflow: visible;
   }
 
-  #homeSearchButton {
+  #homeSearchButton,
+  #exploreSearchButton {
     width: 48px;
     height: 48px;
   }
@@ -1786,6 +1939,31 @@ h1 {
 
   .home-panel {
     padding: 26px 20px 86px;
+  }
+
+  .home-panel.is-explore {
+    min-height: calc(100dvh - 32px - 96px - env(safe-area-inset-bottom));
+    padding: 0;
+  }
+
+  .explore-map-shell {
+    height: calc(100dvh - 32px - 96px - env(safe-area-inset-bottom));
+    min-height: 640px;
+  }
+
+  .explore-search-layer {
+    top: 18px;
+    right: 16px;
+    left: 16px;
+  }
+
+  .explore-search-field {
+    min-height: 62px;
+    padding-left: 16px;
+  }
+
+  .explore-status {
+    margin-left: 14px;
   }
 
   .home-app-header h2 {
