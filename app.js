@@ -16,6 +16,68 @@ const PLATFORM_SEARCH_URLS = {
   Yelp: (poi) => `https://www.yelp.com/search?find_desc=${encodeURIComponent(poi.name)}&find_loc=${encodeURIComponent(poi.city)}`,
 };
 
+const SCENE_QUERY_MAP = {
+  "Date Night": "适合约会的餐厅",
+  "Family Fun": "适合家庭亲子的餐厅和活动",
+  Business: "商务出差方便安全的酒店或餐厅",
+  Solo: "适合一个人用餐或入住的地方",
+  "Night Out": "适合夜生活的餐厅酒吧",
+};
+
+const HOME_NEAR_RECOMMENDATIONS = [
+  {
+    title: "Low-friction Dinner",
+    query: "convenient restaurants near me",
+    description: "近、稳、好订位，适合临时决定。",
+    tags: ["Convenient", "Dinner"],
+  },
+  {
+    title: "Quiet Hotel Base",
+    query: "safe convenient hotel near business district",
+    description: "交通和安全优先，适合短住出差。",
+    tags: ["Business", "Safe"],
+  },
+  {
+    title: "Easy Date Night",
+    query: "romantic date night restaurant",
+    description: "环境、氛围和口味都要在线。",
+    tags: ["Date Night", "Atmosphere"],
+  },
+  {
+    title: "Solo Reset",
+    query: "solo dining counter seat restaurant",
+    description: "一个人也舒服，不需要社交压力。",
+    tags: ["Solo", "Calm"],
+  },
+];
+
+const TRENDING_TEMPLATES = [
+  {
+    title: "Manhattan date-night tables",
+    query: "Manhattan date night restaurants",
+    description: "适合约会、纪念日和轻正式晚餐。",
+    tags: ["Date Night", "Restaurant"],
+  },
+  {
+    title: "Safe business hotels",
+    query: "safe convenient business hotels",
+    description: "位置、交通、清洁度和品牌信任优先。",
+    tags: ["Business", "Hotel"],
+  },
+  {
+    title: "Family-friendly picks",
+    query: "family friendly restaurants",
+    description: "动线简单、口味稳定、对小朋友友好。",
+    tags: ["Family Fun", "Easy"],
+  },
+  {
+    title: "Late-night plans",
+    query: "night out restaurants bars",
+    description: "适合晚餐后继续走一段行程。",
+    tags: ["Night Out", "Trending"],
+  },
+];
+
 const poiData = [
   {
     id: "jardin-bleu",
@@ -122,8 +184,14 @@ const poiData = [
 const state = {
   query: "",
   type: "all",
-  selectedId: poiData[0].id,
+  selectedId: null,
   userSelectedPoi: false,
+  selectedScene: "",
+  homeSearchStatus: "idle",
+  homeSearchError: "",
+  homeCity: "New York",
+  aiIntent: null,
+  aiCandidates: [],
   providerLookup: null,
   googlePois: [],
   tripAdvisorPois: [],
@@ -174,8 +242,21 @@ const state = {
 
 const elements = {
   searchInput: document.querySelector("#searchInput"),
+  homeSearchForm: document.querySelector("#homeSearchForm"),
+  homeSearchButton: document.querySelector("#homeSearchButton"),
   typeTabs: document.querySelectorAll(".type-tab"),
   quickFilters: document.querySelector(".quick-filters"),
+  cityFilter: document.querySelector("#cityFilter"),
+  districtFilter: document.querySelector("#districtFilter"),
+  transitFilter: document.querySelector("#transitFilter"),
+  distanceFilter: document.querySelector("#distanceFilter"),
+  aiStatus: document.querySelector("#aiStatus"),
+  intentBar: document.querySelector("#intentBar"),
+  aiResultsSection: document.querySelector("#aiResultsSection"),
+  nearYouCity: document.querySelector("#nearYouCity"),
+  nearYouRail: document.querySelector("#nearYouRail"),
+  trendingCity: document.querySelector("#trendingCity"),
+  trendingGrid: document.querySelector("#trendingGrid"),
   poiList: document.querySelector("#poiList"),
   detailView: document.querySelector("#detailView"),
   resultCount: document.querySelector("#resultCount"),
@@ -196,6 +277,7 @@ let googleAutocompleteService = null;
 let googleSearchTimer = null;
 let googleSearchToken = 0;
 let googleFallbackTimer = null;
+let homeSearchToken = 0;
 let tripAdvisorSearchTimer = null;
 let tripAdvisorSearchToken = 0;
 let bookingSearchTimer = null;
@@ -1066,8 +1148,8 @@ function renderSelectionPrompt() {
         <span></span>
         <span></span>
       </div>
-      <h2>选择一个 Google POI</h2>
-      <p>左侧列表来自 Google Places。选中后，我会用该 POI 的完整名称和类型去查询其它来源并填写评分卡。</p>
+      <h2>选择一个 POI</h2>
+      <p>从 AI Picks、Near You 或 Trending 中选择一个地点后，我会继续查询各平台评分和 Know Before You Go。</p>
     </div>
   `;
 }
@@ -1416,6 +1498,129 @@ function renderTavilyStatus() {
   elements.tavilyStatus.innerHTML = `<span class="status-dot"></span>${label}`;
 }
 
+function getHomeFilters() {
+  return {
+    city: elements.cityFilter?.value.trim() || state.homeCity || "",
+    district: elements.districtFilter?.value.trim() || "",
+    transit: elements.transitFilter?.value.trim() || "",
+    distance: elements.distanceFilter?.value || "",
+    type: state.type,
+  };
+}
+
+function getHomeSearchQuery(baseQuery = state.query) {
+  const filters = getHomeFilters();
+  return [
+    baseQuery,
+    state.selectedScene ? SCENE_QUERY_MAP[state.selectedScene] || state.selectedScene : "",
+    filters.district,
+    filters.city,
+    filters.transit,
+    filters.distance,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function renderIntentBar() {
+  const intent = state.aiIntent;
+  if (!intent) {
+    elements.intentBar.hidden = true;
+    elements.intentBar.innerHTML = "";
+    return;
+  }
+
+  const items = [
+    ["位置", intent.location],
+    ["场景", intent.scene || state.selectedScene],
+    ["身份", intent.persona],
+    ["出发地", intent.origin],
+    ["类型", intent.type === "hotel" ? "酒店" : "餐厅"],
+    ["预算", intent.budget],
+    ["关键词", (intent.keywords || []).join(" / ")],
+  ].filter(([, value]) => value);
+
+  elements.intentBar.hidden = !items.length;
+  elements.intentBar.innerHTML = items
+    .map(([label, value]) => `<span class="intent-chip">${escapeHtml(label)}：${escapeHtml(value)}</span>`)
+    .join("");
+}
+
+function renderRecommendationCard(item, index, className) {
+  const tags = (item.tags || [])
+    .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
+    .join("");
+  return `
+    <button type="button" class="${className}" data-home-query="${escapeHtml(item.query)}" data-home-scene="${escapeHtml(item.scene || item.tags?.[0] || "")}">
+      <div class="${className === "trend-card" ? "trend-media" : "recommendation-media"}" aria-hidden="true"></div>
+      <div class="${className === "trend-card" ? "trend-body" : "recommendation-body"}">
+        <h3>${escapeHtml(item.title)}</h3>
+        <p>${escapeHtml(item.description)}</p>
+        <div class="home-card-tags">${tags}</div>
+      </div>
+    </button>
+  `;
+}
+
+function renderHomeFeeds() {
+  const filters = getHomeFilters();
+  state.homeCity = filters.city || state.homeCity || "New York";
+  elements.nearYouCity.textContent = state.homeCity ? state.homeCity : "";
+  elements.trendingCity.textContent = state.homeCity || "your city";
+
+  elements.nearYouRail.innerHTML = HOME_NEAR_RECOMMENDATIONS.map((item, index) =>
+    renderRecommendationCard(
+      {
+        ...item,
+        query: `${item.query} ${filters.district || filters.city || ""}`.trim(),
+        scene: item.tags?.[0],
+      },
+      index,
+      "recommendation-card",
+    ),
+  ).join("");
+
+  elements.trendingGrid.innerHTML = TRENDING_TEMPLATES.map((item, index) =>
+    renderRecommendationCard(
+      {
+        ...item,
+        title: item.title.replace("Manhattan", filters.district || filters.city || "Manhattan"),
+        query: `${item.query} ${filters.district || filters.city || ""}`.trim(),
+        scene: item.tags?.[0],
+      },
+      index,
+      "trend-card",
+    ),
+  ).join("");
+}
+
+function renderHomeSearchState(pois) {
+  const hasSearch = state.query.trim().length >= 2 || state.homeSearchStatus === "searching";
+  const resultPois = hasSearch ? pois : [];
+  elements.aiResultsSection.hidden = !hasSearch;
+  elements.aiStatus.classList.toggle("is-warn", state.homeSearchStatus === "error");
+
+  const labels = {
+    idle: "",
+    searching: "正在理解你的需求并匹配 POI...",
+    ready: state.aiCandidates.length
+      ? "AI 已解析需求，点击候选 POI 查看平台评分。"
+      : resultPois.length
+        ? "AI 已解析需求，并用 Google Places 匹配候选 POI。"
+        : "AI 已完成解析，但没有返回明确候选。",
+    error: state.homeSearchError || "AI 搜索暂不可用",
+  };
+  elements.aiStatus.textContent = labels[state.homeSearchStatus] || "";
+
+  renderIntentBar();
+  renderPoiList(resultPois);
+}
+
+function renderHome(pois) {
+  renderHomeFeeds();
+  renderHomeSearchState(pois);
+}
+
 function render() {
   elements.runtimeNotice.hidden = !isFileRuntime();
   if (isFileRuntime()) {
@@ -1431,13 +1636,13 @@ function render() {
   const pois = getFilteredPois();
   const isSearchMode = state.query.trim().length >= 2;
   if (!state.userSelectedPoi && !isSearchMode) {
-    state.selectedId = pois[0]?.id ?? null;
+    state.selectedId = null;
   } else if (!pois.some((poi) => poi.id === state.selectedId)) {
     state.selectedId = isSearchMode ? null : pois[0]?.id ?? null;
     state.userSelectedPoi = false;
   }
 
-  renderPoiList(pois);
+  renderHome(pois);
   const selectedBasePoi = pois.find((poi) => poi.id === state.selectedId);
   if (isSearchMode && pois.length && !selectedBasePoi) {
     renderSelectionPrompt();
@@ -1489,6 +1694,37 @@ function mapGooglePlaceToPoi(place) {
         updated: "实时",
       },
     },
+  };
+}
+
+function mapAiCandidateToPoi(candidate, index) {
+  const type = candidate.type === "hotel" ? "hotel" : "restaurant";
+  const city = candidate.city || getHomeFilters().city || "AI Search";
+  return {
+    id: candidate.id || `ai-${index}-${normalizeText(candidate.name)}`,
+    type,
+    name: candidate.name,
+    city,
+    area: candidate.area || city,
+    category: candidate.category || (type === "hotel" ? "AI 推荐酒店" : "AI 推荐餐厅"),
+    description: candidate.why || "来自 Gemini 2.5 Flash 的自然语言搜索候选。",
+    price: candidate.price || "暂无价格信息",
+    tags: ["AI Pick", ...(candidate.tags || [])],
+    ratings: {},
+    aiSearchQuery: candidate.searchQuery,
+    aiReason: candidate.why,
+  };
+}
+
+function enrichGooglePoiWithCandidate(poi, candidate) {
+  return {
+    ...poi,
+    category: candidate.category || poi.category,
+    description: candidate.why || poi.description,
+    price: candidate.price || poi.price,
+    tags: Array.from(new Set(["AI Pick", ...(candidate.tags || []), ...poi.tags])),
+    aiSearchQuery: candidate.searchQuery,
+    aiReason: candidate.why,
   };
 }
 
@@ -1616,6 +1852,65 @@ function getGooglePlaceDetails(placeId) {
       },
     );
   });
+}
+
+async function resolveAiCandidateWithGoogle(candidate, index) {
+  if (!googlePlacesService) return mapAiCandidateToPoi(candidate, index);
+
+  const request = {
+    query: candidate.searchQuery || `${candidate.name} ${candidate.area || ""} ${candidate.city || ""}`,
+    fields: ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos"],
+  };
+  const desiredType = candidate.type === "hotel" ? "lodging" : candidate.type === "restaurant" ? "restaurant" : undefined;
+  if (desiredType) request.type = desiredType;
+
+  const { results, status } = await runGoogleTextSearch(request);
+  if (status === google.maps.places.PlacesServiceStatus.OK && results?.[0]) {
+    return enrichGooglePoiWithCandidate(mapGooglePlaceToPoi(results[0]), candidate);
+  }
+
+  return mapAiCandidateToPoi(candidate, index);
+}
+
+async function hydrateAiCandidates(candidates) {
+  const limitedCandidates = candidates.slice(0, 8);
+  const hydrated = [];
+
+  for (let index = 0; index < limitedCandidates.length; index += 1) {
+    hydrated.push(await resolveAiCandidateWithGoogle(limitedCandidates[index], index));
+  }
+
+  const seen = new Set();
+  return hydrated.filter((poi) => {
+    const key = `${poi.type}:${normalizeText(poi.name)}:${normalizeText(poi.city)}:${poi.placeId || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function searchGoogleForHomeQuery(query, intent) {
+  if (!googlePlacesService) return [];
+
+  const filters = getHomeFilters();
+  const request = {
+    query: [
+      query,
+      intent?.location,
+      filters.district,
+      filters.city,
+      filters.transit,
+      filters.distance,
+      intent?.type === "hotel" ? "hotel" : "restaurant",
+    ].filter(Boolean).join(" "),
+    fields: ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos"],
+  };
+  const requestType = intent?.type === "hotel" ? "lodging" : intent?.type === "restaurant" ? "restaurant" : getGoogleRequestType();
+  if (requestType) request.type = requestType;
+
+  const { results, status } = await runGoogleTextSearch(request);
+  if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) return [];
+  return results.slice(0, 8).map(mapGooglePlaceToPoi);
 }
 
 function maybeRetryGoogleWithLocationHints() {
@@ -2283,50 +2578,129 @@ function searchProviderSourcesForSelected(poi) {
   searchGeminiRatings(batchId);
 }
 
-elements.searchInput.addEventListener("input", (event) => {
-  state.query = event.target.value;
+function setType(nextType) {
+  state.type = nextType;
+  elements.typeTabs.forEach((button) => {
+    const isActive = button.dataset.type === nextType;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+}
+
+async function runHomeSearch(queryOverride = "") {
+  const filters = getHomeFilters();
+  const rawQuery = (queryOverride || elements.searchInput.value || state.query || "").trim();
+  const query = rawQuery || SCENE_QUERY_MAP[state.selectedScene] || state.selectedScene || "";
+  if (!query.trim()) return;
+
+  const token = ++homeSearchToken;
+  state.query = query;
   state.userSelectedPoi = false;
   state.selectedId = null;
   state.providerLookup = null;
   state.googlePois = [];
   state.googleFallbackSignature = "";
+  state.aiIntent = null;
+  state.aiCandidates = [];
+  state.homeSearchStatus = "searching";
+  state.homeSearchError = "";
   clearProviderResults();
   render();
-  searchLiveSources();
+
+  try {
+    if (isFileRuntime()) {
+      throw new Error("AI 搜索需要通过本地代理访问");
+    }
+
+    const response = await fetch("/api/ai-search", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        scene: state.selectedScene,
+        type: state.type,
+        filters,
+      }),
+    });
+    const payload = await response.json();
+    if (token !== homeSearchToken) return;
+    if (!response.ok) throw new Error(payload.error || `AI 搜索返回 ${response.status}`);
+
+    state.aiIntent = payload.intent || null;
+    state.aiCandidates = payload.data || [];
+    const parsedType = payload.intent?.type;
+    if (parsedType === "restaurant" || parsedType === "hotel") {
+      setType(parsedType);
+    }
+
+    const hydratedPois = state.aiCandidates.length
+      ? await hydrateAiCandidates(state.aiCandidates)
+      : await searchGoogleForHomeQuery(query, state.aiIntent);
+    if (token !== homeSearchToken) return;
+    state.googlePois = hydratedPois;
+    state.homeSearchStatus = "ready";
+    state.homeSearchError = payload.warning || "";
+    state.googleStatus = googlePlacesService ? "ready" : state.googleStatus;
+    render();
+  } catch (error) {
+    if (token !== homeSearchToken) return;
+    state.homeSearchStatus = "error";
+    state.homeSearchError = error.message;
+    state.googlePois = [];
+    render();
+  }
+}
+
+elements.homeSearchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  runHomeSearch();
 });
 
 elements.typeTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
-    state.type = tab.dataset.type;
+    setType(tab.dataset.type);
     state.userSelectedPoi = false;
     state.selectedId = null;
     state.providerLookup = null;
     state.googlePois = [];
     state.googleFallbackSignature = "";
     clearProviderResults();
-    elements.typeTabs.forEach((button) => {
-      const isActive = button === tab;
-      button.classList.toggle("is-active", isActive);
-      button.setAttribute("aria-selected", String(isActive));
-    });
     render();
-    searchLiveSources();
   });
 });
 
 elements.quickFilters.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-query]");
+  const button = event.target.closest("button[data-query], button[data-scene]");
   if (!button) return;
-  state.query = button.dataset.query;
-  elements.searchInput.value = state.query;
-  state.userSelectedPoi = false;
-  state.selectedId = null;
-  state.providerLookup = null;
-  state.googlePois = [];
-  state.googleFallbackSignature = "";
-  clearProviderResults();
-  render();
-  searchLiveSources();
+  state.selectedScene = button.dataset.scene || "";
+  elements.quickFilters.querySelectorAll("button").forEach((item) => {
+    item.classList.toggle("is-active", item === button);
+  });
+  const query = button.dataset.query || SCENE_QUERY_MAP[state.selectedScene] || state.selectedScene;
+  elements.searchInput.value = query;
+  runHomeSearch(query);
+});
+
+[elements.cityFilter, elements.districtFilter, elements.transitFilter, elements.distanceFilter].forEach((element) => {
+  element?.addEventListener("change", () => {
+    state.homeCity = elements.cityFilter.value.trim() || state.homeCity;
+    render();
+  });
+});
+
+[elements.nearYouRail, elements.trendingGrid].forEach((container) => {
+  container?.addEventListener("click", (event) => {
+    const card = event.target.closest("button[data-home-query]");
+    if (!card) return;
+    state.selectedScene = card.dataset.homeScene || "";
+    elements.quickFilters.querySelectorAll("button").forEach((item) => {
+      item.classList.toggle("is-active", item.dataset.scene === state.selectedScene);
+    });
+    elements.searchInput.value = card.dataset.homeQuery;
+    runHomeSearch(card.dataset.homeQuery);
+  });
 });
 
 elements.detailView.addEventListener("click", (event) => {

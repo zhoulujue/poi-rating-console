@@ -40,6 +40,7 @@ const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 10000000);
 const CACHE_MEMORY_MAX_ENTRIES = Number(process.env.POI_CACHE_MEMORY_MAX_ENTRIES || 5000);
 const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_LIMIT_BYTES || 50 * 1024 * 1024);
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
+const AI_SEARCH_MODEL = process.env.POI_AI_SEARCH_MODEL || "gemini-2.5-flash";
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
   : "https://demandapi.booking.com/3.1";
@@ -499,6 +500,27 @@ function sendJson(res, status, payload) {
     "cache-control": "no-store",
   });
   res.end(JSON.stringify(responsePayload));
+}
+
+function readJsonBody(req, maxBytes = 100000) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > maxBytes) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON"));
+      }
+    });
+    req.on("error", reject);
+  });
 }
 
 function getTripAdvisorCategory(type) {
@@ -1696,6 +1718,269 @@ function normalizeGeminiPoi(payload, fallbackQuery, fallbackType, requestedPlatf
   };
 }
 
+function normalizeAiSearchText(value) {
+  return (value || "").toString().trim().replace(/\s+/g, " ");
+}
+
+function normalizeAiPoiType(value, fallback = "restaurant") {
+  if (value === "hotel" || value === "lodging" || /hotel|住宿|酒店/i.test(value || "")) return "hotel";
+  if (value === "restaurant" || /restaurant|餐厅|吃|dining|food/i.test(value || "")) return "restaurant";
+  return fallback === "hotel" ? "hotel" : "restaurant";
+}
+
+function buildFallbackAiIntent(payload) {
+  const query = normalizeAiSearchText(payload.query);
+  const filters = payload.filters || {};
+  const inferredScene =
+    payload.scene ||
+    (/约会|情侣|date/i.test(query)
+      ? "Date Night"
+      : /亲子|家庭|family/i.test(query)
+        ? "Family Fun"
+        : /商务|出差|business/i.test(query)
+          ? "Business"
+          : /独处|一个人|solo/i.test(query)
+            ? "Solo"
+            : /夜生活|酒吧|night/i.test(query)
+              ? "Night Out"
+              : "");
+  const scene = inferredScene;
+  const type = normalizeAiPoiType(filters.type || payload.type || query, "restaurant");
+  const location =
+    normalizeAiSearchText(filters.district) ||
+    normalizeAiSearchText(filters.city) ||
+    (/曼哈顿|manhattan/i.test(query) ? "Manhattan" : "") ||
+    normalizeAiSearchText(filters.location) ||
+    "";
+  const budgetMatch = query.match(/(?:\$|USD\s*)\s*([0-9][0-9,]*)|([0-9][0-9,]*)\s*(?:美元|美金|刀)/i);
+
+  return {
+    originalQuery: query,
+    location,
+    scene,
+    persona: /情侣|couple/i.test(query) ? "情侣" : "",
+    origin: /新泽西|new jersey|nj/i.test(query) ? "New Jersey" : "",
+    type,
+    budget: normalizeAiSearchText(filters.budget) || (budgetMatch ? `<= $${budgetMatch[1] || budgetMatch[2]}` : ""),
+    keywords: [scene, filters.transit, filters.distance].filter(Boolean).map(String),
+    filters: {
+      city: normalizeAiSearchText(filters.city),
+      district: normalizeAiSearchText(filters.district),
+      transit: normalizeAiSearchText(filters.transit),
+      distance: normalizeAiSearchText(filters.distance),
+    },
+  };
+}
+
+function normalizeAiSearchPayload(parsed, requestPayload) {
+  const fallbackIntent = buildFallbackAiIntent(requestPayload);
+  const intent = {
+    ...fallbackIntent,
+    ...(parsed?.intent && typeof parsed.intent === "object" ? parsed.intent : {}),
+  };
+  intent.type = normalizeAiPoiType(intent.type || fallbackIntent.type, fallbackIntent.type);
+  intent.location = normalizeAiSearchText(intent.location || fallbackIntent.location);
+  intent.scene = normalizeAiSearchText(intent.scene || fallbackIntent.scene);
+  intent.persona = normalizeAiSearchText(intent.persona);
+  intent.origin = normalizeAiSearchText(intent.origin);
+  intent.budget = normalizeAiSearchText(intent.budget);
+  intent.keywords = toArray(intent.keywords).map(normalizeAiSearchText).filter(Boolean);
+  intent.filters = {
+    ...fallbackIntent.filters,
+    ...(intent.filters && typeof intent.filters === "object" ? intent.filters : {}),
+  };
+
+  const candidates = toArray(parsed?.candidates || parsed?.data)
+    .map((candidate, index) => {
+      const name = normalizeAiSearchText(candidate.name || candidate.title);
+      if (!name) return null;
+      const type = normalizeAiPoiType(candidate.type || intent.type, intent.type);
+      const city = normalizeAiSearchText(candidate.city || intent.filters.city || intent.location);
+      const area = normalizeAiSearchText(candidate.area || candidate.neighborhood || intent.filters.district || intent.location);
+      const queryParts = [
+        candidate.searchQuery,
+        name,
+        area,
+        city,
+        type === "hotel" ? "hotel" : "restaurant",
+      ].filter(Boolean);
+
+      return {
+        id: `ai-${normalizeLookupKey(`${name}-${city || area || index}`)}`,
+        name,
+        type,
+        city,
+        area,
+        category: normalizeAiSearchText(candidate.category || candidate.cuisine || (type === "hotel" ? "酒店" : "餐厅")),
+        why: normalizeAiSearchText(candidate.why || candidate.reason || candidate.summary),
+        price: normalizeAiSearchText(candidate.price || candidate.priceHint || candidate.budget),
+        tags: toArray(candidate.tags).map(normalizeAiSearchText).filter(Boolean).slice(0, 4),
+        searchQuery: normalizeAiSearchText(queryParts.join(" ")),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+
+  return {
+    intent,
+    data: candidates,
+  };
+}
+
+function getAiSearchCacheKey(payload) {
+  return makeCacheKey({
+    kind: "ai-search",
+    query: normalizeLookupKey(payload.query),
+    scene: normalizeLookupKey(payload.scene),
+    filters: sortDeep(payload.filters || {}),
+  });
+}
+
+async function handleAiSearch(req, res, url) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readJsonBody(req);
+  } catch (error) {
+    sendJson(res, error.message === "Invalid JSON" ? 400 : 413, { error: error.message });
+    return;
+  }
+
+  const query = normalizeAiSearchText(payload.query);
+  if (query.length < 2 && !payload.scene) {
+    sendJson(res, 200, {
+      intent: buildFallbackAiIntent(payload),
+      data: [],
+    });
+    return;
+  }
+
+  const cacheKey = getAiSearchCacheKey(payload);
+  const forceRefresh = url.searchParams.get("refresh") === "1";
+  const cached = forceRefresh ? null : getCacheEntry(cacheKey);
+  if (cached) {
+    sendJson(res, 200, withCacheMetadata(cached.payload, {
+      status: "hit",
+      source: "ai-search",
+      updatedAt: cached.updatedAt,
+    }));
+    return;
+  }
+
+  if (!geminiApiKey) {
+    const fallback = normalizeAiSearchPayload({}, payload);
+    const entry = writeCacheEntry(cacheKey, fallback, { source: "ai-search", model: AI_SEARCH_MODEL, fallback: true });
+    sendJson(res, 200, withCacheMetadata({
+      ...fallback,
+      warning: "Gemini API key 未配置，已返回规则解析结果。",
+    }, {
+      status: "stored",
+      source: "ai-search",
+      updatedAt: entry.updatedAt,
+    }));
+    return;
+  }
+
+  const filters = payload.filters || {};
+  const prompt = `
+You are a POI discovery planner. Parse the user's natural-language travel/dining intent and return concrete POI candidates.
+
+User query: ${query || payload.scene}
+Selected scenario: ${payload.scene || "none"}
+City filter: ${filters.city || "unknown"}
+District/business area filter: ${filters.district || "none"}
+Transit filter: ${filters.transit || "none"}
+Distance filter: ${filters.distance || "none"}
+Type filter: ${filters.type || payload.type || "auto"}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "intent": {
+    "location": "target city, district, landmark, or area",
+    "scene": "date|family|business|solo|nightlife|general",
+    "persona": "who is going, if mentioned",
+    "origin": "where they start from, if mentioned",
+    "type": "restaurant|hotel",
+    "budget": "budget constraint if any",
+    "keywords": ["safe", "convenient"],
+    "filters": {
+      "city": "city",
+      "district": "district/business area",
+      "transit": "subway line or station",
+      "distance": "distance requirement"
+    }
+  },
+  "candidates": [
+    {
+      "name": "real POI name",
+      "type": "restaurant|hotel",
+      "city": "city",
+      "area": "neighborhood/address hint",
+      "category": "short category/cuisine/hotel style",
+      "why": "one sentence matching the user's intent",
+      "price": "price or budget hint if available",
+      "tags": ["Date Night", "Safe"],
+      "searchQuery": "best Google Places text search query"
+    }
+  ]
+}
+
+Rules:
+- Return 4 to 8 real POI candidates when possible.
+- Prefer candidates that match location, scene, budget, safety/convenience, and persona.
+- Do not invent exact ratings.
+- If the user asks in Chinese, keep intent labels and reasons concise Chinese where natural.
+- Candidate names must be specific establishments, not neighborhoods or generic categories.
+`;
+
+  try {
+    let modelData;
+    try {
+      modelData = await geminiGenerateRatings(prompt, true, 30000, AI_SEARCH_MODEL);
+    } catch (error) {
+      if (!isAbortError(error) && !isGeminiLocationUnsupported(error)) throw error;
+      modelData = await geminiGenerateRatings(
+        `${prompt}
+
+Google Search grounding is unavailable or timed out. Return a conservative answer from model knowledge. If uncertain, return fewer candidates.`,
+        false,
+        20000,
+        AI_SEARCH_MODEL,
+      );
+    }
+
+    const text = modelData.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
+    const parsed = extractJsonObject(text);
+    const normalized = normalizeAiSearchPayload(parsed || {}, payload);
+    const responsePayload = {
+      ...normalized,
+      rawText: text,
+      warning: parsed ? undefined : "AI 搜索结果无法解析，已返回规则解析结果。",
+    };
+    const entry = writeCacheEntry(cacheKey, responsePayload, { source: "ai-search", model: AI_SEARCH_MODEL });
+    sendJson(res, 200, withCacheMetadata(responsePayload, {
+      status: "stored",
+      source: "ai-search",
+      updatedAt: entry.updatedAt,
+    }));
+  } catch (error) {
+    const fallback = normalizeAiSearchPayload({}, payload);
+    const entry = writeCacheEntry(cacheKey, fallback, { source: "ai-search", model: AI_SEARCH_MODEL, fallback: true });
+    sendJson(res, 200, withCacheMetadata({
+      ...fallback,
+      warning: `AI 搜索失败，已返回规则解析结果：${error.message}`,
+    }, {
+      status: "stored",
+      source: "ai-search",
+      updatedAt: entry.updatedAt,
+    }));
+  }
+}
+
 function getBravePlatformQuery(platform, query, type, city) {
   const locationHint = city ? ` ${city}` : "";
   const base = `"${query}"${locationHint}`;
@@ -2041,12 +2326,12 @@ function isGeminiLocationUnsupported(error) {
   );
 }
 
-async function geminiGenerateRatings(prompt, useSearch, timeoutMs = 30000) {
+async function geminiGenerateRatings(prompt, useSearch, timeoutMs = 30000, modelName = geminiModel) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`,
     {
       method: "POST",
       signal: controller.signal,
@@ -2576,6 +2861,11 @@ function handleRequest(req, res) {
   if (url.pathname === "/api/tavily/ratings") {
     if (maybeServeCachedProvider(res, url, "tavily")) return;
     handleTavilyRatings(req, res, url);
+    return;
+  }
+
+  if (url.pathname === "/api/ai-search") {
+    handleAiSearch(req, res, url);
     return;
   }
 
