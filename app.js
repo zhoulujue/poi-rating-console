@@ -378,6 +378,14 @@ function getPoiMetaParts(poi) {
   return [category, price, distance].filter(Boolean);
 }
 
+function getFriendlySearchError(error) {
+  const message = error?.message || String(error || "");
+  if (/load failed|failed to fetch|networkerror|fetch failed|abort|cancel/i.test(message)) {
+    return "搜索请求暂时失败，请检查网络后重试。";
+  }
+  return message || "搜索暂时不可用，请稍后重试。";
+}
+
 function normalizeText(value) {
   return (value || "")
     .toString()
@@ -1674,7 +1682,7 @@ function renderHomeSearchState(pois) {
   const resultPois = hasSearch ? pois : [];
   elements.homeView?.classList.toggle("has-results", hasSearch);
   elements.aiResultsSection.hidden = !hasSearch;
-  elements.aiStatus.classList.toggle("is-warn", state.homeSearchStatus === "error");
+  elements.aiStatus.classList.toggle("is-warn", state.homeSearchStatus === "error" || Boolean(state.homeSearchError));
   if (elements.resultsTitle) {
     const title = state.query.trim() || state.selectedScene || "Search";
     elements.resultsTitle.textContent = `"${title}"`;
@@ -1683,11 +1691,13 @@ function renderHomeSearchState(pois) {
   const labels = {
     idle: "",
     searching: "正在理解你的需求并匹配 POI...",
-    ready: state.aiCandidates.length
-      ? "AI 已解析需求，点击候选 POI 查看平台评分。"
-      : resultPois.length
-        ? "AI 已解析需求，并用 Google Places 匹配候选 POI。"
-        : "AI 已完成解析，但没有返回明确候选。",
+    ready:
+      state.homeSearchError ||
+      (state.aiCandidates.length
+        ? "AI 已解析需求，点击候选 POI 查看平台评分。"
+        : resultPois.length
+          ? "AI 已解析需求，并用 Google Places 匹配候选 POI。"
+          : "AI 已完成解析，但没有返回明确候选。"),
     error: state.homeSearchError || "AI 搜索暂不可用",
   };
   elements.aiStatus.textContent = labels[state.homeSearchStatus] || "";
@@ -2729,20 +2739,41 @@ async function runHomeSearch(queryOverride = "") {
       setType(parsedType);
     }
 
-    const hydratedPois = state.aiCandidates.length
-      ? await hydrateAiCandidates(state.aiCandidates)
-      : await searchGoogleForHomeQuery(query, state.aiIntent);
-    if (token !== homeSearchToken) return;
-    state.googlePois = hydratedPois;
+    const fallbackPois = state.aiCandidates.map(mapAiCandidateToPoi);
+    state.googlePois = fallbackPois;
     state.homeSearchStatus = "ready";
     state.homeSearchError = payload.warning || "";
+    render();
+
+    let hydratedPois = fallbackPois;
+    try {
+      hydratedPois = state.aiCandidates.length
+        ? await hydrateAiCandidates(state.aiCandidates)
+        : await searchGoogleForHomeQuery(query, state.aiIntent);
+    } catch (hydrationError) {
+      hydratedPois = fallbackPois;
+      state.homeSearchError = "Google Places 补全暂时失败，先显示 AI 搜索结果。";
+    }
+    if (token !== homeSearchToken) return;
+    state.googlePois = hydratedPois.length ? hydratedPois : fallbackPois;
+    state.homeSearchStatus = "ready";
+    if (!state.homeSearchError) state.homeSearchError = payload.warning || "";
     state.googleStatus = googlePlacesService ? "ready" : state.googleStatus;
     render();
   } catch (error) {
     if (token !== homeSearchToken) return;
-    state.homeSearchStatus = "error";
-    state.homeSearchError = error.message;
-    state.googlePois = [];
+    let fallbackPois = [];
+    try {
+      fallbackPois = await searchGoogleForHomeQuery(query, null);
+    } catch {
+      fallbackPois = [];
+    }
+    if (token !== homeSearchToken) return;
+    state.googlePois = fallbackPois;
+    state.homeSearchStatus = fallbackPois.length ? "ready" : "error";
+    state.homeSearchError = fallbackPois.length
+      ? "AI 搜索暂时失败，已改用 Google Places 结果。"
+      : getFriendlySearchError(error);
     render();
   }
 }
