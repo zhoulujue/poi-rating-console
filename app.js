@@ -61,24 +61,28 @@ const TRENDING_TEMPLATES = [
     query: "Manhattan date night restaurants",
     description: "SoHo · rating-led picks with strong atmosphere signals.",
     tags: ["TOP 3%", "SoHo"],
+    imageUrl: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1200&q=84",
   },
   {
     title: "Safe business stays",
     query: "safe convenient business hotels",
     description: "Hotels near transit, offices, and late check-in routes.",
     tags: ["Business", "Hotel"],
+    imageUrl: "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=84",
   },
   {
     title: "Family-friendly tables",
     query: "family friendly restaurants",
     description: "Easy seating, calmer rooms, and crowd-pleasing menus.",
     tags: ["Family Fun", "Easy"],
+    imageUrl: "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?auto=format&fit=crop&w=1200&q=84",
   },
   {
     title: "Open-late plans",
     query: "night out restaurants bars",
     description: "Useful after dinner, shows, flights, or long workdays.",
     tags: ["Night Out", "Trending"],
+    imageUrl: "https://images.unsplash.com/photo-1514933651103-005eec06c04b?auto=format&fit=crop&w=1200&q=84",
   },
 ];
 
@@ -1748,9 +1752,10 @@ function renderRecommendationCard(item, index, className) {
   const isTrend = className === "trend-card";
   const mediaClass = isTrend ? "trend-media" : "recommendation-media";
   const bodyClass = isTrend ? "trend-body" : "recommendation-body";
+  const mediaStyle = item.imageUrl ? ` style="--trend-image: url('${escapeHtml(item.imageUrl)}')"` : "";
   return `
     <button type="button" class="${className}" data-home-query="${escapeHtml(item.query)}" data-home-scene="${escapeHtml(item.scene || item.tags?.[0] || "")}">
-      <div class="${mediaClass} tone-${(index % 4) + 1}" aria-hidden="true">
+      <div class="${mediaClass} tone-${(index % 4) + 1}" aria-hidden="true"${mediaStyle}>
         ${item.icon ? `<span>${escapeHtml(item.icon)}</span>` : ""}
       </div>
       <div class="${bodyClass}">
