@@ -17,63 +17,67 @@ const PLATFORM_SEARCH_URLS = {
 };
 
 const SCENE_QUERY_MAP = {
-  "Date Night": "适合约会的餐厅",
-  "Family Fun": "适合家庭亲子的餐厅和活动",
+  "Date Night": "romantic dinner under $80",
+  "Family Fun": "family friendly places",
   Business: "商务出差方便安全的酒店或餐厅",
-  Solo: "适合一个人用餐或入住的地方",
-  "Night Out": "适合夜生活的餐厅酒吧",
+  Solo: "quiet cafe to read",
+  "Night Out": "open late near me",
 };
 
 const HOME_NEAR_RECOMMENDATIONS = [
   {
-    title: "Low-friction Dinner",
-    query: "convenient restaurants near me",
-    description: "近、稳、好订位，适合临时决定。",
-    tags: ["Convenient", "Dinner"],
+    title: "Date Night",
+    query: "romantic dinner under $80",
+    description: "132 spots",
+    tags: ["Date Night"],
+    icon: "☽",
   },
   {
-    title: "Quiet Hotel Base",
-    query: "safe convenient hotel near business district",
-    description: "交通和安全优先，适合短住出差。",
-    tags: ["Business", "Safe"],
+    title: "Slow Brunch",
+    query: "slow brunch quiet restaurant",
+    description: "89 spots",
+    tags: ["Family Fun"],
+    icon: "☕",
   },
   {
-    title: "Easy Date Night",
-    query: "romantic date night restaurant",
-    description: "环境、氛围和口味都要在线。",
-    tags: ["Date Night", "Atmosphere"],
+    title: "After Work",
+    query: "after work wine bar dinner",
+    description: "67 spots",
+    tags: ["Night Out"],
+    icon: "♢",
   },
   {
-    title: "Solo Reset",
-    query: "solo dining counter seat restaurant",
-    description: "一个人也舒服，不需要社交压力。",
-    tags: ["Solo", "Calm"],
+    title: "Solo Read",
+    query: "quiet cafe to read solo",
+    description: "41 spots",
+    tags: ["Solo"],
+    icon: "▰",
   },
 ];
 
 const TRENDING_TEMPLATES = [
   {
-    title: "Manhattan date-night tables",
+    title: "Top 3% in Manhattan",
     query: "Manhattan date night restaurants",
-    description: "适合约会、纪念日和轻正式晚餐。",
-    tags: ["Date Night", "Restaurant"],
+    description: "SoHo · rating-led picks with strong atmosphere signals.",
+    tags: ["TOP 3%", "SoHo"],
   },
   {
-    title: "Safe business hotels",
+    title: "Safe business stays",
     query: "safe convenient business hotels",
-    description: "位置、交通、清洁度和品牌信任优先。",
+    description: "Hotels near transit, offices, and late check-in routes.",
     tags: ["Business", "Hotel"],
   },
   {
-    title: "Family-friendly picks",
+    title: "Family-friendly tables",
     query: "family friendly restaurants",
-    description: "动线简单、口味稳定、对小朋友友好。",
+    description: "Easy seating, calmer rooms, and crowd-pleasing menus.",
     tags: ["Family Fun", "Easy"],
   },
   {
-    title: "Late-night plans",
+    title: "Open-late plans",
     query: "night out restaurants bars",
-    description: "适合晚餐后继续走一段行程。",
+    description: "Useful after dinner, shows, flights, or long workdays.",
     tags: ["Night Out", "Trending"],
   },
 ];
@@ -241,6 +245,9 @@ const state = {
 };
 
 const elements = {
+  homeView: document.querySelector("#homeView"),
+  homeLocationLabel: document.querySelector("#homeLocationLabel"),
+  mobileTabbar: document.querySelector(".mobile-tabbar"),
   searchInput: document.querySelector("#searchInput"),
   homeSearchForm: document.querySelector("#homeSearchForm"),
   homeSearchButton: document.querySelector("#homeSearchButton"),
@@ -260,6 +267,7 @@ const elements = {
   poiList: document.querySelector("#poiList"),
   detailView: document.querySelector("#detailView"),
   resultCount: document.querySelector("#resultCount"),
+  resultsTitle: document.querySelector("#resultsTitle"),
   emptyTemplate: document.querySelector("#emptyTemplate"),
   googleStatus: document.querySelector("#googleStatus"),
   tripAdvisorStatus: document.querySelector("#tripAdvisorStatus"),
@@ -344,6 +352,28 @@ function sourceSummary(poi) {
       };
     })
     .slice(0, 4);
+}
+
+function getPoiBadge(poi, index) {
+  const googleRating = poi.ratings.Google?.score || 0;
+  const average = averageScore(poi);
+  if (index === 0 && average >= 88) return { label: "TOP 3%", tone: "top" };
+  if (poi.tags?.includes("AI Pick") && index <= 1) return { label: "EDITOR'S PICK", tone: "editor" };
+  if (googleRating >= 4.5 || average >= 86) return { label: "VERIFIED", tone: "verified" };
+  return null;
+}
+
+function getPoiDistanceLabel(poi) {
+  if (poi.distanceText) return poi.distanceText;
+  if (poi.area && poi.city && poi.area !== poi.city) return poi.area;
+  return poi.city || "Nearby";
+}
+
+function getPoiMetaParts(poi) {
+  const category = (poi.category || "").split("·")[0]?.trim() || (poi.type === "hotel" ? "Hotel" : "Restaurant");
+  const price = poi.price && !poi.price.includes("暂无") ? poi.price : "";
+  const distance = getPoiDistanceLabel(poi);
+  return [category, price, distance].filter(Boolean);
 }
 
 function normalizeText(value) {
@@ -602,33 +632,47 @@ function selectPoi(id) {
 }
 
 function renderPoiList(pois) {
-  elements.resultCount.textContent = `${pois.length} 个`;
+  elements.resultCount.textContent = `${pois.length} RESULTS · SORTED BY RATING`;
   elements.poiList.innerHTML = "";
 
-  pois.forEach((poi) => {
+  pois.forEach((poi, index) => {
     const card = document.createElement("button");
     card.className = `poi-card ${poi.id === state.selectedId ? "is-selected" : ""}`;
     card.type = "button";
     card.addEventListener("click", () => selectPoi(poi.id));
 
+    const badge = getPoiBadge(poi, index);
+    const badgeMarkup = badge
+      ? `<span class="result-badge is-${badge.tone}">${escapeHtml(badge.label)}</span>`
+      : "";
+    const mediaClass = `poi-card-media tone-${(index % 4) + 1}`;
+    const mediaMarkup = poi.photoUrl
+      ? `<img src="${escapeHtml(poi.photoUrl)}" alt="" loading="lazy" />`
+      : `<span>${escapeHtml((poi.name || "?").slice(0, 1))}</span>`;
+    const meta = getPoiMetaParts(poi).map(escapeHtml).join(" · ");
+    const reason = poi.aiReason || poi.description || "";
     const miniScores = sourceSummary(poi)
       .map(
         ({ source, value }) => `
           <div class="mini-score">
-            <strong>${value}</strong>
-            <span>${source}</span>
+            <strong>${escapeHtml(value)}</strong>
+            <span>${escapeHtml(source)}</span>
           </div>
         `,
       )
       .join("");
 
     card.innerHTML = `
-      <div class="poi-title-row">
-        <h3>${poi.name}</h3>
-        <span class="tag">${poi.type === "restaurant" ? "餐厅" : "酒店"}</span>
+      <div class="${mediaClass}" aria-hidden="true">${mediaMarkup}</div>
+      <div class="poi-card-main">
+        <div class="poi-title-row">
+          <h3>${escapeHtml(poi.name)}</h3>
+          ${badgeMarkup}
+        </div>
+        <p class="poi-meta">${meta}</p>
+        ${reason ? `<p class="poi-reason">${escapeHtml(reason)}</p>` : ""}
+        <div class="mini-scores">${miniScores}</div>
       </div>
-      <p class="poi-meta">${poi.city} · ${poi.area}<br>${poi.category}</p>
-      <div class="mini-scores">${miniScores}</div>
     `;
     elements.poiList.append(card);
   });
@@ -1550,10 +1594,15 @@ function renderRecommendationCard(item, index, className) {
   const tags = (item.tags || [])
     .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
     .join("");
+  const isTrend = className === "trend-card";
+  const mediaClass = isTrend ? "trend-media" : "recommendation-media";
+  const bodyClass = isTrend ? "trend-body" : "recommendation-body";
   return `
     <button type="button" class="${className}" data-home-query="${escapeHtml(item.query)}" data-home-scene="${escapeHtml(item.scene || item.tags?.[0] || "")}">
-      <div class="${className === "trend-card" ? "trend-media" : "recommendation-media"}" aria-hidden="true"></div>
-      <div class="${className === "trend-card" ? "trend-body" : "recommendation-body"}">
+      <div class="${mediaClass} tone-${(index % 4) + 1}" aria-hidden="true">
+        ${item.icon ? `<span>${escapeHtml(item.icon)}</span>` : ""}
+      </div>
+      <div class="${bodyClass}">
         <h3>${escapeHtml(item.title)}</h3>
         <p>${escapeHtml(item.description)}</p>
         <div class="home-card-tags">${tags}</div>
@@ -1565,8 +1614,18 @@ function renderRecommendationCard(item, index, className) {
 function renderHomeFeeds() {
   const filters = getHomeFilters();
   state.homeCity = filters.city || state.homeCity || "New York";
-  elements.nearYouCity.textContent = state.homeCity ? state.homeCity : "";
-  elements.trendingCity.textContent = state.homeCity || "your city";
+  const locationLabel = filters.district
+    ? `${filters.district}, ${state.homeCity === "New York" ? "NY" : state.homeCity}`
+    : state.homeCity || "New York";
+  if (elements.homeLocationLabel) {
+    elements.homeLocationLabel.textContent = `📍 ${locationLabel}`;
+  }
+  if (elements.nearYouCity) {
+    elements.nearYouCity.textContent = "All →";
+  }
+  if (elements.trendingCity) {
+    elements.trendingCity.textContent = state.homeCity || "your city";
+  }
 
   elements.nearYouRail.innerHTML = HOME_NEAR_RECOMMENDATIONS.map((item, index) =>
     renderRecommendationCard(
@@ -1597,8 +1656,13 @@ function renderHomeFeeds() {
 function renderHomeSearchState(pois) {
   const hasSearch = state.query.trim().length >= 2 || state.homeSearchStatus === "searching";
   const resultPois = hasSearch ? pois : [];
+  elements.homeView?.classList.toggle("has-results", hasSearch);
   elements.aiResultsSection.hidden = !hasSearch;
   elements.aiStatus.classList.toggle("is-warn", state.homeSearchStatus === "error");
+  if (elements.resultsTitle) {
+    const title = state.query.trim() || state.selectedScene || "Search";
+    elements.resultsTitle.textContent = `"${title}"`;
+  }
 
   const labels = {
     idle: "",
@@ -2701,6 +2765,31 @@ elements.quickFilters.addEventListener("click", (event) => {
     elements.searchInput.value = card.dataset.homeQuery;
     runHomeSearch(card.dataset.homeQuery);
   });
+});
+
+elements.mobileTabbar?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-home-nav]");
+  if (!button) return;
+
+  elements.mobileTabbar.querySelectorAll("button").forEach((item) => {
+    item.classList.toggle("is-active", item === button);
+  });
+
+  if (button.dataset.homeNav === "discover") {
+    state.query = "";
+    state.homeSearchStatus = "idle";
+    state.homeSearchError = "";
+    state.aiIntent = null;
+    state.aiCandidates = [];
+    state.googlePois = [];
+    state.userSelectedPoi = false;
+    state.selectedId = null;
+    elements.searchInput.value = "";
+    render();
+    return;
+  }
+
+  elements.searchInput.focus();
 });
 
 elements.detailView.addEventListener("click", (event) => {

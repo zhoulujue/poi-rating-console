@@ -57,26 +57,35 @@
               TripAdvisor 和 Booking 需要通过本地代理访问。请运行 node server.js 后打开 http://127.0.0.1:4173。
             </div>
 
+            <div class="home-app-header">
+              <div>
+                <p class="home-location" id="homeLocationLabel">📍 Manhattan, NY</p>
+                <h2>Good evening,<br /><em>there.</em></h2>
+              </div>
+              <div class="home-menu-dots" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+
             <form class="home-search-card" id="homeSearchForm">
-              <label class="home-search-field">
-                <span>Search anything</span>
+              <label class="home-search-field" aria-label="自然语言搜索">
+                <span class="search-glyph" aria-hidden="true">⌕</span>
                 <input
                   id="searchInput"
                   type="search"
                   placeholder="Where do you want to go?"
                   autocomplete="off"
                 />
+                <button type="submit" id="homeSearchButton" aria-label="Search">→</button>
               </label>
-              <button type="submit" id="homeSearchButton">搜索</button>
-              <p>约会、亲子、出差、安全、方便、预算、地铁线附近</p>
             </form>
 
-            <div class="quick-filters scene-pills" aria-label="快捷场景标签">
-              <button data-scene="Date Night" data-query="date night restaurants">Date Night</button>
-              <button data-scene="Family Fun" data-query="family friendly places">Family Fun</button>
-              <button data-scene="Business" data-query="business trip convenient hotel or restaurant">Business</button>
-              <button data-scene="Solo" data-query="solo dining or stay">Solo</button>
-              <button data-scene="Night Out" data-query="night out restaurants and bars">Night Out</button>
+            <div class="quick-filters scene-pills" aria-label="快捷搜索示例">
+              <button data-scene="Date Night" data-query="romantic dinner under $80">romantic dinner under $80</button>
+              <button data-scene="Solo" data-query="quiet cafe to read">quiet cafe to read</button>
+              <button data-scene="Night Out" data-query="open late near me">open late near me</button>
             </div>
 
             <div class="home-filters" aria-label="位置筛选">
@@ -91,7 +100,7 @@
               </label>
               <label>
                 <span>Area</span>
-                <input id="districtFilter" type="text" placeholder="Manhattan / SoHo" autocomplete="off" />
+                <input id="districtFilter" type="text" value="Manhattan" placeholder="SoHo / Midtown" autocomplete="off" />
               </label>
               <label>
                 <span>Transit</span>
@@ -110,30 +119,40 @@
             </div>
 
             <div class="ai-status" id="aiStatus"></div>
-            <div class="intent-bar" id="intentBar" hidden></div>
 
             <section class="home-section ai-results-section" id="aiResultsSection" hidden>
-              <div class="panel-heading">
-                <h2>AI Picks</h2>
-                <span id="resultCount"></span>
+              <div class="results-heading">
+                <p>Search Results</p>
+                <h2 id="resultsTitle">"Where do you want to go?"</h2>
               </div>
+              <div class="intent-bar" id="intentBar" hidden></div>
+              <p class="results-count" id="resultCount"></p>
               <div id="poiList" class="poi-list"></div>
             </section>
 
-            <section class="home-section">
+            <section class="home-section discovery-section">
               <div class="panel-heading">
-                <h2>Near You</h2>
-                <span id="nearYouCity"></span>
+                <h2>Find by <em>moment</em></h2>
+                <span id="nearYouCity">All →</span>
               </div>
               <div class="recommendation-rail" id="nearYouRail"></div>
             </section>
 
-            <section class="home-section">
+            <section class="home-section discovery-section">
               <div class="panel-heading">
-                <h2>Trending in <span id="trendingCity">New York</span></h2>
+                <h2>Across the <em>city</em></h2>
+                <span>More →</span>
               </div>
               <div class="trending-grid" id="trendingGrid"></div>
             </section>
+
+            <nav class="mobile-tabbar" aria-label="Primary">
+              <button type="button" class="is-active" data-home-nav="discover"><span>⌂</span>Discover</button>
+              <button type="button" data-home-nav="explore"><span>⌖</span>Explore</button>
+              <button type="button" data-home-nav="buddy"><span>✦</span>Buddy</button>
+              <button type="button" data-home-nav="route"><span>→</span>Route</button>
+              <button type="button" data-home-nav="me"><span>○</span>Me</button>
+            </nav>
           </section>
 
           <section class="detail-panel" aria-live="polite">
