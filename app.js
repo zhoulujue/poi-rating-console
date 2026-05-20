@@ -87,6 +87,9 @@ const TRENDING_TEMPLATES = [
   },
 ];
 
+const imageCache = new Map();
+let imageCacheRenderFrame = 0;
+
 const poiData = [
   {
     id: "jardin-bleu",
@@ -399,6 +402,76 @@ function saveHomeLocation() {
       lng: state.homeLocationLng,
     }),
   );
+}
+
+function scheduleImageCacheRender() {
+  if (imageCacheRenderFrame) return;
+  imageCacheRenderFrame = requestAnimationFrame(() => {
+    imageCacheRenderFrame = 0;
+    render();
+  });
+}
+
+function warmImageCache(url) {
+  if (!url) return null;
+  const cached = imageCache.get(url);
+  if (cached) return cached;
+
+  const entry = {
+    url,
+    status: "loading",
+    image: null,
+  };
+  const image = new Image();
+  entry.image = image;
+  image.decoding = "async";
+  image.loading = "eager";
+  image.onload = async () => {
+    try {
+      await image.decode?.();
+    } catch {
+      // A loaded image can still fail decode() in some browsers; keep it usable.
+    }
+    entry.status = "loaded";
+    scheduleImageCacheRender();
+  };
+  image.onerror = () => {
+    entry.status = "error";
+    scheduleImageCacheRender();
+  };
+  imageCache.set(url, entry);
+  image.src = url;
+  return entry;
+}
+
+function isCachedImageLoaded(url) {
+  return imageCache.get(url)?.status === "loaded";
+}
+
+function escapeCssUrl(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, "");
+}
+
+function renderCachedImage(url, alt = "", fallback = "") {
+  if (!url) return fallback;
+  const entry = warmImageCache(url);
+  if (entry?.status !== "loaded") return fallback;
+
+  return `<img class="cached-image is-loaded" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}" loading="eager" decoding="sync" />`;
+}
+
+function renderCachedBackgroundStyle(url, variableName = "--trend-image") {
+  if (!url) return "";
+  const entry = warmImageCache(url);
+  if (entry?.status !== "loaded") return "";
+  return ` style="${variableName}: url('${escapeHtml(escapeCssUrl(url))}')"`;
+}
+
+function warmPoiImageCache(pois = []) {
+  pois.forEach((poi) => warmImageCache(poi.photoUrl));
 }
 
 function normalizeScore(rating) {
@@ -857,6 +930,7 @@ function selectPoi(id) {
 }
 
 function renderPoiList(pois) {
+  warmPoiImageCache(pois);
   elements.resultCount.textContent = `${pois.length} RESULTS · SORTED BY RATING`;
   elements.poiList.innerHTML = "";
 
@@ -871,9 +945,8 @@ function renderPoiList(pois) {
       ? `<span class="result-badge is-${badge.tone}">${escapeHtml(badge.label)}</span>`
       : "";
     const mediaClass = `poi-card-media tone-${(index % 4) + 1}`;
-    const mediaMarkup = poi.photoUrl
-      ? `<img src="${escapeHtml(poi.photoUrl)}" alt="" loading="lazy" />`
-      : `<span>${escapeHtml((poi.name || "?").slice(0, 1))}</span>`;
+    const mediaFallback = `<span>${escapeHtml((poi.name || "?").slice(0, 1))}</span>`;
+    const mediaMarkup = renderCachedImage(poi.photoUrl, "", mediaFallback);
     const meta = getPoiMetaParts(poi).map(escapeHtml).join(" · ");
     const reason = poi.aiReason || poi.description || "";
     const miniScores = sourceSummary(poi)
@@ -905,13 +978,22 @@ function renderPoiList(pois) {
 
 function renderVisual(poi) {
   if (poi.photoUrl) {
+    const imageMarkup = renderCachedImage(poi.photoUrl, poi.name);
+    if (!imageMarkup) {
+      return renderVisualFallback(poi);
+    }
+
     return `
       <div class="visual-card">
-        <img src="${poi.photoUrl}" alt="${poi.name}" loading="lazy" />
+        ${imageMarkup}
       </div>
     `;
   }
 
+  return renderVisualFallback(poi);
+}
+
+function renderVisualFallback(poi) {
   const isHotel = poi.type === "hotel";
   const title = isHotel ? "Hotel rating visual" : "Restaurant rating visual";
 
@@ -2454,9 +2536,12 @@ function renderRecommendationCard(item, index, className) {
     .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
     .join("");
   const isTrend = className === "trend-card";
-  const mediaClass = isTrend ? "trend-media" : "recommendation-media";
+  const isTrendImageLoaded = isTrend && isCachedImageLoaded(item.imageUrl);
+  const mediaClass = isTrend
+    ? `trend-media ${isTrendImageLoaded ? "is-image-loaded" : "is-image-loading"}`
+    : "recommendation-media";
   const bodyClass = isTrend ? "trend-body" : "recommendation-body";
-  const mediaStyle = item.imageUrl ? ` style="--trend-image: url('${escapeHtml(item.imageUrl)}')"` : "";
+  const mediaStyle = isTrend ? renderCachedBackgroundStyle(item.imageUrl) : "";
   const bodyMarkup = `
     <div class="${bodyClass}">
       <h3>${escapeHtml(item.title)}</h3>
