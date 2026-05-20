@@ -190,6 +190,8 @@ const state = {
   type: "all",
   selectedId: null,
   userSelectedPoi: false,
+  detailPageOpen: false,
+  listScrollY: 0,
   pendingDetailScroll: false,
   selectedScene: "",
   homeSearchStatus: "idle",
@@ -246,6 +248,7 @@ const state = {
 };
 
 const elements = {
+  contentGrid: document.querySelector(".content-grid"),
   homeView: document.querySelector("#homeView"),
   homeLocationLabel: document.querySelector("#homeLocationLabel"),
   mobileTabbar: document.querySelector(".mobile-tabbar"),
@@ -424,12 +427,99 @@ function getPoiRank(poi, normalizedQuery) {
   return rank;
 }
 
+function isCompactNavigation() {
+  return Boolean(window.matchMedia?.("(max-width: 980px)").matches);
+}
+
+function getCurrentPathForHistory() {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+function replaceListHistoryState() {
+  if (!window.history?.replaceState) return;
+  window.history.replaceState(
+    {
+      poiApp: true,
+      view: "list",
+      listScrollY: state.listScrollY,
+    },
+    "",
+    getCurrentPathForHistory(),
+  );
+}
+
+function initializeNavigationHistory() {
+  if ("scrollRestoration" in window.history) {
+    window.history.scrollRestoration = "manual";
+  }
+  if (!window.history?.replaceState || window.history.state?.poiApp) return;
+  state.listScrollY = window.scrollY || 0;
+  replaceListHistoryState();
+}
+
+function applyNavigationMode() {
+  const compact = isCompactNavigation();
+  const showDetailPage = compact && state.detailPageOpen && Boolean(state.selectedId);
+
+  elements.contentGrid?.classList.toggle("is-detail-page", showDetailPage);
+  elements.contentGrid?.classList.toggle("is-list-page", compact && !showDetailPage);
+  elements.homeView?.setAttribute("aria-hidden", showDetailPage ? "true" : "false");
+  elements.detailPanel?.setAttribute("aria-hidden", compact && !showDetailPage ? "true" : "false");
+}
+
+function openDetailPageForCompact(id) {
+  if (!isCompactNavigation()) {
+    state.detailPageOpen = false;
+    return;
+  }
+
+  state.listScrollY = window.scrollY || 0;
+  state.detailPageOpen = true;
+  if (window.history?.pushState) {
+    replaceListHistoryState();
+    window.history.pushState(
+      {
+        poiApp: true,
+        view: "detail",
+        selectedId: id,
+        listScrollY: state.listScrollY,
+      },
+      "",
+      getCurrentPathForHistory(),
+    );
+  }
+}
+
+function restoreListPageScroll(scrollY = state.listScrollY) {
+  const targetScrollY = Math.max(0, scrollY || 0);
+  const restore = () => window.scrollTo(0, targetScrollY);
+
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(restore);
+    setTimeout(restore, 80);
+    setTimeout(restore, 260);
+  });
+}
+
+function closeDetailPage() {
+  if (!state.detailPageOpen) return;
+
+  if (window.history?.state?.poiApp && window.history.state.view === "detail") {
+    window.history.back();
+    return;
+  }
+
+  state.detailPageOpen = false;
+  render();
+  restoreListPageScroll();
+}
+
 function scrollDetailIntoViewIfCompact() {
-  if (!elements.detailPanel || !window.matchMedia?.("(max-width: 980px)").matches) return;
+  if (!elements.detailPanel || !isCompactNavigation() || !state.detailPageOpen) return;
 
   const scrollToDetail = () => {
-    const top = window.scrollY + elements.detailPanel.getBoundingClientRect().top - 8;
-    window.scrollTo(0, Math.max(0, top));
+    window.scrollTo(0, 0);
   };
 
   requestAnimationFrame(() => {
@@ -437,6 +527,27 @@ function scrollDetailIntoViewIfCompact() {
     setTimeout(scrollToDetail, 250);
     setTimeout(scrollToDetail, 800);
   });
+}
+
+function handleNavigationPop(event) {
+  const nextState = event.state;
+
+  if (nextState?.poiApp && nextState.view === "detail" && nextState.selectedId) {
+    state.selectedId = nextState.selectedId;
+    state.userSelectedPoi = true;
+    state.detailPageOpen = true;
+    state.listScrollY = nextState.listScrollY || state.listScrollY || 0;
+    render();
+    requestAnimationFrame(() => window.scrollTo(0, 0));
+    return;
+  }
+
+  state.detailPageOpen = false;
+  if (nextState?.poiApp && Number.isFinite(nextState.listScrollY)) {
+    state.listScrollY = nextState.listScrollY;
+  }
+  render();
+  restoreListPageScroll();
 }
 
 function getUserRatingKey(poi, source) {
@@ -639,6 +750,7 @@ function selectPoi(id) {
   state.selectedId = id;
   state.userSelectedPoi = true;
   state.pendingDetailScroll = true;
+  openDetailPageForCompact(id);
   const selectedPoi = getFilteredPois().find((poi) => poi.id === id);
   const cacheIdentity = selectedPoi ? getKnowBeforeCacheIdentity(selectedPoi, selectedPoi) : null;
   state.providerLookup = selectedPoi
@@ -1160,6 +1272,10 @@ function renderDetail(poi) {
     .sort((a, b) => normalizeScore(b[1]) - normalizeScore(a[1]))[0];
 
   elements.detailView.innerHTML = `
+    <div class="detail-mobile-nav">
+      <button type="button" data-detail-nav="back" aria-label="返回列表">←</button>
+      <span>Details</span>
+    </div>
     <div class="hero-detail">
       <div>
         <div class="detail-title-row">
@@ -1712,6 +1828,7 @@ function renderHome(pois) {
 }
 
 function render() {
+  applyNavigationMode();
   elements.runtimeNotice.hidden = !isFileRuntime();
   if (isFileRuntime()) {
     state.tripAdvisorError = "TripAdvisor 需要通过本地代理访问";
@@ -1730,6 +1847,7 @@ function render() {
   } else if (!pois.some((poi) => poi.id === state.selectedId)) {
     state.selectedId = isSearchMode ? null : pois[0]?.id ?? null;
     state.userSelectedPoi = false;
+    if (!state.selectedId) state.detailPageOpen = false;
   }
 
   renderHome(pois);
@@ -1747,6 +1865,7 @@ function render() {
   renderGeminiStatus();
   renderBraveStatus();
   renderTavilyStatus();
+  applyNavigationMode();
 
   if (state.pendingDetailScroll && state.selectedId) {
     state.pendingDetailScroll = false;
@@ -2701,6 +2820,7 @@ async function runHomeSearch(queryOverride = "") {
   state.query = query;
   state.userSelectedPoi = false;
   state.selectedId = null;
+  state.detailPageOpen = false;
   state.providerLookup = null;
   state.googlePois = [];
   state.googleFallbackSignature = "";
@@ -2845,7 +2965,9 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
     state.googlePois = [];
     state.userSelectedPoi = false;
     state.selectedId = null;
+    state.detailPageOpen = false;
     elements.searchInput.value = "";
+    replaceListHistoryState();
     render();
     return;
   }
@@ -2854,6 +2976,12 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
 });
 
 elements.detailView.addEventListener("click", (event) => {
+  const backButton = event.target.closest("button[data-detail-nav='back']");
+  if (backButton) {
+    closeDetailPage();
+    return;
+  }
+
   const refreshButton = event.target.closest("button[data-know-before-action='refresh']");
   if (refreshButton) {
     maybeGenerateKnowBeforeYouGo({ force: true });
@@ -2880,5 +3008,9 @@ elements.detailView.addEventListener("click", (event) => {
   }
 });
 
+window.addEventListener("popstate", handleNavigationPop);
+window.addEventListener("resize", applyNavigationMode);
+
+initializeNavigationHistory();
 render();
 loadGooglePlaces();

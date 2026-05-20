@@ -840,6 +840,10 @@ h1 {
   padding: 24px;
 }
 
+.detail-mobile-nav {
+  display: none;
+}
+
 .hero-detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 220px;
@@ -1315,6 +1319,16 @@ h1 {
     display: grid;
   }
 
+  .content-grid.is-list-page .detail-panel,
+  .content-grid.is-detail-page .home-panel {
+    display: none;
+  }
+
+  .content-grid.is-detail-page .detail-panel {
+    display: block;
+    min-height: calc(100vh - 32px);
+  }
+
   .home-panel,
   .detail-panel {
     min-height: auto;
@@ -1331,6 +1345,43 @@ h1 {
   .detail-panel {
     overflow: hidden;
     padding: 22px;
+  }
+
+  .detail-mobile-nav {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: -22px -22px 18px;
+    padding: 12px 18px;
+    border-bottom: 1px solid #ede7df;
+    background: rgba(255, 253, 250, 0.96);
+    backdrop-filter: blur(12px);
+  }
+
+  .detail-mobile-nav button {
+    display: inline-grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid #e4ded5;
+    border-radius: 999px;
+    color: #1f1c18;
+    background: #fffdfa;
+    font-size: 22px;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  .detail-mobile-nav span {
+    color: #7d756c;
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .hero-detail {
@@ -1467,6 +1518,11 @@ h1 {
 
   .detail-panel {
     padding: 16px;
+  }
+
+  .detail-mobile-nav {
+    margin: -16px -16px 16px;
+    padding: 10px 14px;
   }
 
   .hero-detail {
