@@ -197,6 +197,9 @@ const state = {
   homeSearchStatus: "idle",
   homeSearchError: "",
   homeCity: "New York",
+  homeDistrict: "Manhattan",
+  homeTransit: "",
+  homeDistance: "",
   aiIntent: null,
   aiCandidates: [],
   providerLookup: null,
@@ -1693,9 +1696,9 @@ function renderTavilyStatus() {
 function getHomeFilters() {
   return {
     city: elements.cityFilter?.value.trim() || state.homeCity || "",
-    district: elements.districtFilter?.value.trim() || "",
-    transit: elements.transitFilter?.value.trim() || "",
-    distance: elements.distanceFilter?.value || "",
+    district: elements.districtFilter?.value.trim() || state.homeDistrict || "",
+    transit: elements.transitFilter?.value.trim() || state.homeTransit || "",
+    distance: elements.distanceFilter?.value || state.homeDistance || "",
     type: state.type,
   };
 }
@@ -2938,7 +2941,10 @@ elements.quickFilters.addEventListener("click", (event) => {
 
 [elements.cityFilter, elements.districtFilter, elements.transitFilter, elements.distanceFilter].forEach((element) => {
   element?.addEventListener("change", () => {
-    state.homeCity = elements.cityFilter.value.trim() || state.homeCity;
+    state.homeCity = elements.cityFilter?.value.trim() || state.homeCity;
+    state.homeDistrict = elements.districtFilter?.value.trim() || state.homeDistrict;
+    state.homeTransit = elements.transitFilter?.value.trim() || state.homeTransit;
+    state.homeDistance = elements.distanceFilter?.value || state.homeDistance;
     render();
   });
 });
