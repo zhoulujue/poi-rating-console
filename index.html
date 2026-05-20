@@ -59,9 +59,29 @@
 
             <div class="home-app-header">
               <div>
-                <p class="home-location" id="homeLocationLabel">📍 Manhattan, NY</p>
+                <button type="button" class="home-location" id="homeLocationButton" aria-haspopup="dialog" aria-controls="cityPickerDialog">
+                  <span id="homeLocationLabel">📍 Manhattan, NY</span>
+                </button>
                 <h2>Good evening,<br /><em>there.</em></h2>
               </div>
+            </div>
+
+            <div class="city-picker-backdrop" id="cityPickerBackdrop" hidden>
+              <section class="city-picker-dialog" id="cityPickerDialog" role="dialog" aria-modal="true" aria-labelledby="cityPickerTitle">
+                <div class="city-picker-header">
+                  <div>
+                    <p class="eyebrow" id="cityPickerTitle">Switch City</p>
+                    <h3>Where are you exploring?</h3>
+                  </div>
+                  <button type="button" id="cityPickerClose" aria-label="Close city search">×</button>
+                </div>
+                <label class="city-search-field" aria-label="Search city">
+                  <span class="search-glyph" aria-hidden="true"></span>
+                  <input id="citySearchInput" type="search" placeholder="Search city with Google Maps" autocomplete="off" />
+                </label>
+                <p class="city-search-status" id="citySearchStatus"></p>
+                <div class="city-search-results" id="citySearchResults"></div>
+              </section>
             </div>
 
             <form class="home-search-card" id="homeSearchForm">

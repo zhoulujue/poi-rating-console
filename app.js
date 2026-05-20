@@ -6,6 +6,7 @@ const REQUIRED_SOURCES = {
 const PROVIDER_BATCH_SOURCES = ["tripadvisor", "booking", "yelp", "michelin", "brave", "tavily", "gemini"];
 
 const USER_RATINGS_STORAGE_KEY = "poi-ratings:user-ratings";
+const HOME_LOCATION_STORAGE_KEY = "poi-ratings:home-location";
 
 const PLATFORM_SEARCH_URLS = {
   Agoda: (poi) => `https://www.agoda.com/search?text=${encodeURIComponent(`${poi.name} ${poi.city}`)}`,
@@ -189,6 +190,8 @@ const poiData = [
   },
 ];
 
+const savedHomeLocation = loadHomeLocation();
+
 const state = {
   query: "",
   type: "all",
@@ -200,10 +203,19 @@ const state = {
   selectedScene: "",
   homeSearchStatus: "idle",
   homeSearchError: "",
-  homeCity: "New York",
-  homeDistrict: "Manhattan",
+  homeCity: savedHomeLocation.city || "New York",
+  homeDistrict: savedHomeLocation.district || "Manhattan",
+  homeLocationLabel: savedHomeLocation.label || "",
+  homeLocationPlaceId: savedHomeLocation.placeId || "",
+  homeLocationLat: savedHomeLocation.lat ?? null,
+  homeLocationLng: savedHomeLocation.lng ?? null,
   homeTransit: "",
   homeDistance: "",
+  cityPickerOpen: false,
+  citySearchQuery: "",
+  citySearchStatus: "idle",
+  citySearchError: "",
+  cityPredictions: [],
   aiIntent: null,
   aiCandidates: [],
   providerLookup: null,
@@ -257,7 +269,14 @@ const state = {
 const elements = {
   contentGrid: document.querySelector(".content-grid"),
   homeView: document.querySelector("#homeView"),
+  homeLocationButton: document.querySelector("#homeLocationButton"),
   homeLocationLabel: document.querySelector("#homeLocationLabel"),
+  cityPickerBackdrop: document.querySelector("#cityPickerBackdrop"),
+  cityPickerDialog: document.querySelector("#cityPickerDialog"),
+  cityPickerClose: document.querySelector("#cityPickerClose"),
+  citySearchInput: document.querySelector("#citySearchInput"),
+  citySearchStatus: document.querySelector("#citySearchStatus"),
+  citySearchResults: document.querySelector("#citySearchResults"),
   mobileTabbar: document.querySelector(".mobile-tabbar"),
   searchInput: document.querySelector("#searchInput"),
   homeSearchForm: document.querySelector("#homeSearchForm"),
@@ -296,6 +315,8 @@ let googlePlacesService = null;
 let googleAutocompleteService = null;
 let googleSearchTimer = null;
 let googleSearchToken = 0;
+let citySearchTimer = null;
+let citySearchToken = 0;
 let googleFallbackTimer = null;
 let homeSearchToken = 0;
 let tripAdvisorSearchTimer = null;
@@ -329,6 +350,29 @@ function loadUserRatings() {
 
 function saveUserRatings() {
   localStorage.setItem(USER_RATINGS_STORAGE_KEY, JSON.stringify(state.userRatings));
+}
+
+function loadHomeLocation() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(HOME_LOCATION_STORAGE_KEY) || "{}");
+    return stored && typeof stored === "object" ? stored : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveHomeLocation() {
+  localStorage.setItem(
+    HOME_LOCATION_STORAGE_KEY,
+    JSON.stringify({
+      city: state.homeCity,
+      district: state.homeDistrict,
+      label: state.homeLocationLabel,
+      placeId: state.homeLocationPlaceId,
+      lat: state.homeLocationLat,
+      lng: state.homeLocationLng,
+    }),
+  );
 }
 
 function normalizeScore(rating) {
@@ -1721,6 +1765,273 @@ function getHomeSearchQuery(baseQuery = state.query) {
     .join(" ");
 }
 
+function getHomeLocationDisplay(filters = getHomeFilters()) {
+  if (state.homeLocationLabel) return state.homeLocationLabel;
+  if (filters.district) {
+    return `${filters.district}, ${state.homeCity === "New York" ? "NY" : state.homeCity || filters.city}`;
+  }
+  return state.homeCity || filters.city || "New York";
+}
+
+function getAddressComponent(components = [], type, field = "long_name") {
+  const component = components.find((item) => item.types?.includes(type));
+  return component?.[field] || "";
+}
+
+function normalizeLatLng(location) {
+  if (!location) return { lat: null, lng: null };
+  const lat = typeof location.lat === "function" ? location.lat() : location.lat;
+  const lng = typeof location.lng === "function" ? location.lng() : location.lng;
+  return {
+    lat: Number.isFinite(lat) ? lat : null,
+    lng: Number.isFinite(lng) ? lng : null,
+  };
+}
+
+function mapGooglePlaceToHomeLocation(place) {
+  const components = place.address_components || [];
+  const locality =
+    getAddressComponent(components, "locality") ||
+    getAddressComponent(components, "postal_town") ||
+    getAddressComponent(components, "administrative_area_level_3");
+  const admin2 = getAddressComponent(components, "administrative_area_level_2");
+  const admin1 = getAddressComponent(components, "administrative_area_level_1");
+  const admin1Short = getAddressComponent(components, "administrative_area_level_1", "short_name");
+  const country = getAddressComponent(components, "country", "short_name");
+  const sublocality =
+    getAddressComponent(components, "sublocality_level_1") ||
+    getAddressComponent(components, "sublocality") ||
+    getAddressComponent(components, "neighborhood");
+  const placeName = place.name || place.formatted_address?.split(",")[0]?.trim() || "";
+  const city = locality || (country === "US" ? admin2 : admin1) || placeName || "Selected city";
+  let district = "";
+
+  if (placeName && city && normalizeText(placeName) !== normalizeText(city)) {
+    district = placeName;
+  } else if (sublocality && normalizeText(sublocality) !== normalizeText(city)) {
+    district = sublocality;
+  }
+
+  const region = country === "US" ? admin1Short : "";
+  const label = district
+    ? `${district}, ${region || city}`
+    : [city, region].filter(Boolean).join(", ") || place.formatted_address || city;
+  const { lat, lng } = normalizeLatLng(place.geometry?.location);
+
+  return {
+    city,
+    district,
+    label,
+    placeId: place.place_id || "",
+    lat,
+    lng,
+  };
+}
+
+function getCityPredictionParts(prediction) {
+  const formatting = prediction.structured_formatting || {};
+  const terms = prediction.terms || [];
+  const main = formatting.main_text || terms[0]?.value || prediction.description || "";
+  const secondary =
+    formatting.secondary_text ||
+    terms
+      .slice(1)
+      .map((term) => term.value)
+      .join(", ");
+  return { main, secondary };
+}
+
+function scoreCityPrediction(prediction, query) {
+  const { main, secondary } = getCityPredictionParts(prediction);
+  const queryKey = normalizeText(query);
+  const mainKey = normalizeText(main);
+  const secondaryKey = normalizeText(secondary);
+  let score = 0;
+
+  if (mainKey === queryKey) score += 1200;
+  else if (mainKey.startsWith(queryKey)) score += 260;
+  if (secondaryKey.includes(normalizeText(state.homeCity))) score += 360;
+  if (state.homeDistrict && secondaryKey.includes(normalizeText(state.homeDistrict))) score += 180;
+  if (prediction.types?.includes("locality")) score += 80;
+  if (prediction.types?.includes("sublocality") || prediction.types?.includes("neighborhood")) score += 60;
+  return score;
+}
+
+function renderCityPicker() {
+  if (!elements.cityPickerBackdrop) return;
+
+  elements.cityPickerBackdrop.hidden = !state.cityPickerOpen;
+  elements.cityPickerBackdrop.classList.toggle("is-open", state.cityPickerOpen);
+  elements.homeLocationButton?.setAttribute("aria-expanded", String(state.cityPickerOpen));
+  if (!state.cityPickerOpen) return;
+
+  if (elements.citySearchInput && document.activeElement !== elements.citySearchInput) {
+    elements.citySearchInput.value = state.citySearchQuery;
+  }
+
+  const statusLabels = {
+    idle: state.citySearchQuery.trim().length < 2 ? "输入城市名后搜索。" : "",
+    loading: "正在准备 Google Maps 城市搜索...",
+    searching: "正在搜索城市...",
+    ready: state.cityPredictions.length ? "" : "没有找到匹配城市。",
+    error: state.citySearchError || "Google Maps 城市搜索暂不可用。",
+  };
+
+  if (elements.citySearchStatus) {
+    elements.citySearchStatus.textContent = statusLabels[state.citySearchStatus] || "";
+    elements.citySearchStatus.classList.toggle("is-error", state.citySearchStatus === "error");
+  }
+
+  if (elements.citySearchResults) {
+    elements.citySearchResults.innerHTML = state.cityPredictions
+      .map((prediction) => {
+        const { main, secondary } = getCityPredictionParts(prediction);
+        return `
+          <button type="button" class="city-result-button" data-city-place-id="${escapeHtml(prediction.place_id)}">
+            <span>
+              <span class="city-result-main">${escapeHtml(main)}</span>
+              ${secondary ? `<span class="city-result-secondary">${escapeHtml(secondary)}</span>` : ""}
+            </span>
+            <span class="city-result-arrow" aria-hidden="true">→</span>
+          </button>
+        `;
+      })
+      .join("");
+  }
+}
+
+function openCityPicker() {
+  state.cityPickerOpen = true;
+  state.citySearchQuery = "";
+  state.cityPredictions = [];
+  state.citySearchError = "";
+  state.citySearchStatus = googleAutocompleteService
+    ? "idle"
+    : state.googleStatus === "loading"
+      ? "loading"
+      : "error";
+  if (!googleAutocompleteService && state.googleStatus !== "loading") {
+    state.citySearchError = state.googleError || "Google Maps 城市搜索尚未连接。";
+  }
+  render();
+  requestAnimationFrame(() => elements.citySearchInput?.focus());
+}
+
+function closeCityPicker() {
+  state.cityPickerOpen = false;
+  state.citySearchQuery = "";
+  state.cityPredictions = [];
+  state.citySearchError = "";
+  state.citySearchStatus = "idle";
+  citySearchToken += 1;
+  clearTimeout(citySearchTimer);
+  render();
+}
+
+function scheduleCitySearch() {
+  clearTimeout(citySearchTimer);
+  const query = elements.citySearchInput?.value.trim() || "";
+  state.citySearchQuery = query;
+
+  if (query.length < 2) {
+    state.cityPredictions = [];
+    state.citySearchStatus = googleAutocompleteService ? "idle" : "loading";
+    render();
+    return;
+  }
+
+  state.citySearchStatus = "searching";
+  state.citySearchError = "";
+  render();
+  citySearchTimer = setTimeout(() => searchCitiesWithGoogle(query), 220);
+}
+
+async function searchCitiesWithGoogle(query) {
+  const token = ++citySearchToken;
+
+  if (!googleAutocompleteService) {
+    state.citySearchStatus = state.googleStatus === "loading" ? "loading" : "error";
+    state.citySearchError = state.googleError || "Google Maps 城市搜索尚未连接。";
+    render();
+    return;
+  }
+
+  const normalizePredictionKey = (prediction) => normalizeText(prediction.description || prediction.place_id);
+
+  try {
+    const primary = await getGooglePredictions(query, { types: ["(cities)"] });
+    if (token !== citySearchToken) return;
+    let predictions = primary.predictions || [];
+
+    const regional = await getGooglePredictions(query, { types: ["(regions)"] });
+    if (token !== citySearchToken) return;
+    predictions = [...predictions, ...(regional.predictions || [])];
+
+    const seen = new Set();
+    state.cityPredictions = predictions
+      .filter((prediction) => {
+        const key = normalizePredictionKey(prediction);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => scoreCityPrediction(b, query) - scoreCityPrediction(a, query))
+      .slice(0, 6);
+    state.citySearchStatus = "ready";
+    state.citySearchError = "";
+  } catch (error) {
+    if (token !== citySearchToken) return;
+    state.cityPredictions = [];
+    state.citySearchStatus = "error";
+    state.citySearchError = getFriendlySearchError(error);
+  } finally {
+    if (token === citySearchToken) render();
+  }
+}
+
+async function selectCityPrediction(placeId) {
+  if (!placeId || !googlePlacesService) return;
+  const token = ++citySearchToken;
+  state.citySearchStatus = "searching";
+  state.citySearchError = "";
+  render();
+
+  try {
+    const { place, status } = await getGooglePlaceDetails(placeId, [
+      "name",
+      "formatted_address",
+      "place_id",
+      "address_components",
+      "geometry",
+      "types",
+    ]);
+    if (token !== citySearchToken) return;
+
+    if (status !== google.maps.places.PlacesServiceStatus.OK || !place) {
+      throw new Error(`Google Maps 返回 ${status}`);
+    }
+
+    const nextLocation = mapGooglePlaceToHomeLocation(place);
+    const shouldRefreshSearch = state.query.trim().length >= 2;
+    state.homeCity = nextLocation.city || state.homeCity;
+    state.homeDistrict = nextLocation.district || "";
+    state.homeLocationLabel = nextLocation.label || "";
+    state.homeLocationPlaceId = nextLocation.placeId || "";
+    state.homeLocationLat = nextLocation.lat;
+    state.homeLocationLng = nextLocation.lng;
+    saveHomeLocation();
+    closeCityPicker();
+    if (shouldRefreshSearch) {
+      runHomeSearch(state.query);
+    }
+  } catch (error) {
+    if (token !== citySearchToken) return;
+    state.citySearchStatus = "error";
+    state.citySearchError = getFriendlySearchError(error);
+    render();
+  }
+}
+
 function renderIntentBar() {
   const intent = state.aiIntent;
   if (!intent) {
@@ -1783,9 +2094,7 @@ function renderRecommendationCard(item, index, className) {
 function renderHomeFeeds() {
   const filters = getHomeFilters();
   state.homeCity = filters.city || state.homeCity || "New York";
-  const locationLabel = filters.district
-    ? `${filters.district}, ${state.homeCity === "New York" ? "NY" : state.homeCity}`
-    : state.homeCity || "New York";
+  const locationLabel = getHomeLocationDisplay(filters);
   if (elements.homeLocationLabel) {
     elements.homeLocationLabel.textContent = `📍 ${locationLabel}`;
   }
@@ -1858,6 +2167,7 @@ function renderHome(pois) {
 
 function render() {
   applyNavigationMode();
+  renderCityPicker();
   elements.runtimeNotice.hidden = !isFileRuntime();
   if (isFileRuntime()) {
     state.tripAdvisorError = "TripAdvisor 需要通过本地代理访问";
@@ -2009,7 +2319,17 @@ function initializePlacesService() {
   googlePlacesService = new google.maps.places.PlacesService(map);
   googleAutocompleteService = new google.maps.places.AutocompleteService();
   state.googleStatus = "ready";
+  const pendingCityQuery =
+    state.cityPickerOpen && state.citySearchStatus === "loading" && state.citySearchQuery.trim().length >= 2
+      ? state.citySearchQuery.trim()
+      : "";
+  if (state.cityPickerOpen && state.citySearchStatus === "loading") {
+    state.citySearchStatus = pendingCityQuery ? "searching" : "idle";
+  }
   render();
+  if (pendingCityQuery) {
+    searchCitiesWithGoogle(pendingCityQuery);
+  }
   if (state.homeSearchStatus === "idle") {
     searchGooglePlaces();
   }
@@ -2066,31 +2386,33 @@ function runGoogleTextSearch(request) {
   });
 }
 
-function getGooglePredictions(input) {
+function getGooglePredictions(input, options = {}) {
   return new Promise((resolve) => {
     if (!googleAutocompleteService) {
       resolve({ predictions: [], status: "UNAVAILABLE" });
       return;
     }
 
-    googleAutocompleteService.getPlacePredictions(
-      {
-        input,
-        types: ["establishment"],
-      },
-      (predictions, status) => {
-        resolve({ predictions: predictions || [], status });
-      },
-    );
+    const request = {
+      input,
+      types: options.types || ["establishment"],
+    };
+    if (options.componentRestrictions) {
+      request.componentRestrictions = options.componentRestrictions;
+    }
+
+    googleAutocompleteService.getPlacePredictions(request, (predictions, status) => {
+      resolve({ predictions: predictions || [], status });
+    });
   });
 }
 
-function getGooglePlaceDetails(placeId) {
+function getGooglePlaceDetails(placeId, fields = ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos"]) {
   return new Promise((resolve) => {
     googlePlacesService.getDetails(
       {
         placeId,
-        fields: ["name", "formatted_address", "place_id", "rating", "user_ratings_total", "types", "price_level", "photos"],
+        fields,
       },
       (place, status) => {
         resolve({ place, status });
@@ -2152,6 +2474,10 @@ async function searchGoogleForHomeQuery(query, intent) {
   };
   const requestType = intent?.type === "hotel" ? "lodging" : intent?.type === "restaurant" ? "restaurant" : getGoogleRequestType();
   if (requestType) request.type = requestType;
+  if (Number.isFinite(state.homeLocationLat) && Number.isFinite(state.homeLocationLng)) {
+    request.location = new google.maps.LatLng(state.homeLocationLat, state.homeLocationLng);
+    request.radius = 50000;
+  }
 
   const { results, status } = await runGoogleTextSearch(request);
   if (status !== google.maps.places.PlacesServiceStatus.OK || !results?.length) return [];
@@ -2926,6 +3252,42 @@ async function runHomeSearch(queryOverride = "") {
     render();
   }
 }
+
+elements.homeLocationButton?.addEventListener("click", openCityPicker);
+
+elements.cityPickerClose?.addEventListener("click", closeCityPicker);
+
+elements.cityPickerBackdrop?.addEventListener("click", (event) => {
+  if (event.target === elements.cityPickerBackdrop) {
+    closeCityPicker();
+  }
+});
+
+elements.citySearchInput?.addEventListener("input", scheduleCitySearch);
+
+elements.citySearchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeCityPicker();
+    return;
+  }
+
+  if (event.key === "Enter" && state.cityPredictions[0]?.place_id) {
+    event.preventDefault();
+    selectCityPrediction(state.cityPredictions[0].place_id);
+  }
+});
+
+elements.citySearchResults?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-city-place-id]");
+  if (!button) return;
+  selectCityPrediction(button.dataset.cityPlaceId);
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.cityPickerOpen) {
+    closeCityPicker();
+  }
+});
 
 elements.homeSearchForm.addEventListener("submit", (event) => {
   event.preventDefault();
