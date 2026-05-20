@@ -34,7 +34,10 @@ const MAX_PORT_ATTEMPTS = 20;
 const ROOT = __dirname;
 const CACHE_DIR = process.env.POI_CACHE_DIR || path.join(ROOT, ".data");
 const CACHE_FILE = process.env.POI_CACHE_FILE || path.join(CACHE_DIR, "poi-cache.json");
+const CACHE_ENTRIES_DIR = process.env.POI_CACHE_ENTRIES_DIR || path.join(CACHE_DIR, "entries");
 const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 10000000);
+const CACHE_MEMORY_MAX_ENTRIES = Number(process.env.POI_CACHE_MEMORY_MAX_ENTRIES || 5000);
+const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_LIMIT_BYTES || 50 * 1024 * 1024);
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
@@ -49,6 +52,7 @@ const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
 };
+const PUBLIC_STATIC_FILES = new Set(["/index.html", "/styles.css", "/app.js", "/config.js"]);
 
 const RESTAURANT_INSIGHT_DIMENSIONS = ["环境", "氛围", "口味", "服务"];
 const HOTEL_INSIGHT_DIMENSIONS = [
@@ -81,54 +85,145 @@ function makeCacheKey(parts) {
   return crypto.createHash("sha256").update(stableStringify(parts)).digest("hex");
 }
 
-function loadResponseCache() {
+function loadLegacyResponseCache() {
   try {
+    const stat = fs.statSync(CACHE_FILE);
+    if (stat.size > LEGACY_CACHE_LOAD_LIMIT_BYTES) {
+      console.warn(`Legacy cache file is ${stat.size} bytes; skipping in-memory load. New cache entries use ${CACHE_ENTRIES_DIR}.`);
+      return {};
+    }
+
     const parsed = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    return {
-      version: 1,
-      entries: parsed.entries && typeof parsed.entries === "object" ? parsed.entries : {},
-    };
+    return parsed.entries && typeof parsed.entries === "object" ? parsed.entries : {};
   } catch {
-    return { version: 1, entries: {} };
+    return {};
   }
 }
 
-const responseCache = loadResponseCache();
+const responseCache = {
+  entries: new Map(),
+};
+const inflightCacheWrites = new Map();
 
-function persistResponseCache() {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+function getCacheEntryFile(key) {
+  return path.join(CACHE_ENTRIES_DIR, key.slice(0, 2), `${key}.json`);
+}
 
-  const entries = Object.entries(responseCache.entries);
-  if (entries.length > CACHE_MAX_ENTRIES) {
-    entries
-      .sort(([, a], [, b]) => String(a.updatedAt || "").localeCompare(String(b.updatedAt || "")))
-      .slice(0, entries.length - CACHE_MAX_ENTRIES)
-      .forEach(([key]) => {
-        delete responseCache.entries[key];
-      });
+function rememberCacheEntry(key, entry) {
+  if (!entry) return entry;
+
+  if (responseCache.entries.has(key)) {
+    responseCache.entries.delete(key);
+  }
+  responseCache.entries.set(key, entry);
+
+  while (responseCache.entries.size > CACHE_MEMORY_MAX_ENTRIES) {
+    const oldestKey = responseCache.entries.keys().next().value;
+    responseCache.entries.delete(oldestKey);
   }
 
-  const tmpFile = `${CACHE_FILE}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(responseCache, null, 2));
-  fs.renameSync(tmpFile, CACHE_FILE);
+  return entry;
+}
+
+function loadCacheEntryFromDisk(key) {
+  try {
+    const entry = JSON.parse(fs.readFileSync(getCacheEntryFile(key), "utf8"));
+    return rememberCacheEntry(key, entry);
+  } catch {
+    return null;
+  }
+}
+
+function persistCacheEntry(key, entry) {
+  const file = getCacheEntryFile(key);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(entry));
+  fs.renameSync(tmpFile, file);
 }
 
 function getCacheEntry(key) {
-  return responseCache.entries[key] || null;
+  const hotEntry = responseCache.entries.get(key);
+  if (hotEntry) return rememberCacheEntry(key, hotEntry);
+
+  return loadCacheEntryFromDisk(key);
 }
 
 function writeCacheEntry(key, payload, meta = {}) {
   const now = new Date().toISOString();
-  const previous = responseCache.entries[key];
-  responseCache.entries[key] = {
+  const previous = getCacheEntry(key);
+  const entry = {
     createdAt: previous?.createdAt || now,
     updatedAt: now,
     payload,
     meta,
   };
-  persistResponseCache();
-  return responseCache.entries[key];
+  rememberCacheEntry(key, entry);
+  persistCacheEntry(key, entry);
+  return entry;
 }
+
+function getInflightCacheWrite(key) {
+  return inflightCacheWrites.get(key)?.promise || null;
+}
+
+function startInflightCacheWrite(key) {
+  if (inflightCacheWrites.has(key)) return inflightCacheWrites.get(key).promise;
+
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  }).finally(() => {
+    inflightCacheWrites.delete(key);
+  });
+
+  inflightCacheWrites.set(key, { promise, resolve, reject });
+  return promise;
+}
+
+function resolveInflightCacheWrite(key, entry) {
+  const inflight = inflightCacheWrites.get(key);
+  if (inflight) inflight.resolve(entry);
+}
+
+function rejectInflightCacheWrite(key, error) {
+  const inflight = inflightCacheWrites.get(key);
+  if (inflight) inflight.reject(error);
+}
+
+function serveInflightCacheWrite(res, promise, cacheMetadata) {
+  promise
+    .then((entry) => {
+      sendJson(
+        res,
+        200,
+        withCacheMetadata(entry.payload, {
+          ...cacheMetadata,
+          status: "hit",
+          updatedAt: entry.updatedAt,
+          platforms: cacheMetadata.platforms || getPayloadPlatforms(entry.payload),
+        }),
+      );
+    })
+    .catch((error) => {
+      sendJson(res, 502, {
+        error: error.message || "Cached request failed",
+      });
+    });
+}
+
+Object.entries(loadLegacyResponseCache()).forEach(([key, entry]) => {
+  rememberCacheEntry(key, entry);
+  if (!fs.existsSync(getCacheEntryFile(key))) {
+    try {
+      persistCacheEntry(key, entry);
+    } catch (error) {
+      console.warn(`Failed to migrate cache entry ${key}: ${error.message}`);
+    }
+  }
+});
 
 function withCacheMetadata(payload, cache) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
@@ -315,6 +410,16 @@ function maybeServeCachedProvider(res, url, source) {
     return true;
   }
 
+  const inflight = getInflightCacheWrite(key);
+  if (inflight) {
+    serveInflightCacheWrite(res, inflight, {
+      source,
+      scope: cacheScope,
+      platforms: entry ? getPayloadPlatforms(entry.payload) : [],
+    });
+    return true;
+  }
+
   res.__cacheWrite = {
     key,
     source,
@@ -322,6 +427,7 @@ function maybeServeCachedProvider(res, url, source) {
     staleMissingPlatforms: entry ? getMissingPlatforms(entry.payload, targetPlatforms) : [],
     cacheScope,
   };
+  startInflightCacheWrite(key);
   return false;
 }
 
@@ -350,6 +456,9 @@ function sendJson(res, status, payload) {
       missingPlatforms: getMissingPlatforms(payload, cacheWrite.targetPlatforms),
       previousMissingPlatforms: cacheWrite.staleMissingPlatforms,
     });
+    resolveInflightCacheWrite(cacheWrite.key, entry);
+  } else if (cacheWrite) {
+    rejectInflightCacheWrite(cacheWrite.key, new Error(payload?.error || `Request failed with ${status}`));
   }
 
   res.writeHead(status, {
@@ -477,6 +586,42 @@ function extractAssistedRating(platform, text) {
   };
 }
 
+function createTimeoutError(label, timeoutMs) {
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.name = "AbortError";
+  return error;
+}
+
+async function withTimeout(promise, timeoutMs, label = "Request") {
+  let timeout;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(createTimeoutError(label, timeoutMs)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchWithTimeout(resource, options = {}, timeoutMs = 15000, label = "Fetch") {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(resource, {
+      ...options,
+      signal: options.signal || controller.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) throw createTimeoutError(label, timeoutMs);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function handleAssistRating(req, res, url) {
   const platform = url.searchParams.get("platform");
   const query = url.searchParams.get("q")?.trim() || "";
@@ -553,11 +698,11 @@ async function tripAdvisorFetch(endpoint, params) {
     }
   });
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     headers: {
       accept: "application/json",
     },
-  });
+  }, 15000, "TripAdvisor API");
   const text = await response.text();
   let data = null;
 
@@ -579,7 +724,7 @@ async function tripAdvisorFetch(endpoint, params) {
 }
 
 async function bookingFetch(endpoint, body) {
-  const response = await fetch(`${BOOKING_BASE}${endpoint}`, {
+  const response = await fetchWithTimeout(`${BOOKING_BASE}${endpoint}`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -588,7 +733,7 @@ async function bookingFetch(endpoint, body) {
       "x-affiliate-id": String(bookingAffiliateId),
     },
     body: JSON.stringify(body),
-  });
+  }, 20000, "Booking API");
   const text = await response.text();
   let data = null;
 
@@ -1086,6 +1231,17 @@ async function handleKnowBeforeYouGo(req, res, url) {
       return;
     }
 
+    if (!forceRefresh) {
+      const inflight = getInflightCacheWrite(cacheKey);
+      if (inflight) {
+        serveInflightCacheWrite(res, inflight, {
+          source: "know-before-you-go",
+          scope: "poi-identity",
+        });
+        return;
+      }
+    }
+
     res.__cacheWrite = {
       key: cacheKey,
       source: "know-before-you-go",
@@ -1094,6 +1250,7 @@ async function handleKnowBeforeYouGo(req, res, url) {
       forceRefresh,
       cacheScope: "poi-identity",
     };
+    startInflightCacheWrite(cacheKey);
 
     if (!geminiApiKey) {
       sendJson(res, 200, {
@@ -1247,12 +1404,12 @@ async function braveWebSearch(q) {
   url.searchParams.set("country", "us");
   url.searchParams.set("safesearch", "moderate");
 
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     headers: {
       accept: "application/json",
       "X-Subscription-Token": braveApiKey,
     },
-  });
+  }, 12000, "Brave Search API");
   const data = await response.json();
 
   if (!response.ok) {
@@ -1408,7 +1565,7 @@ function getTavilyDomains(platform) {
 }
 
 async function tavilySearch(query, platform) {
-  const response = await fetch("https://api.tavily.com/search", {
+  const response = await fetchWithTimeout("https://api.tavily.com/search", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -1423,7 +1580,7 @@ async function tavilySearch(query, platform) {
       max_results: 6,
       include_domains: getTavilyDomains(platform),
     }),
-  });
+  }, 15000, "Tavily Search API");
   const data = await response.json();
 
   if (!response.ok) {
@@ -1483,11 +1640,25 @@ async function handleTavilyRatings(req, res, url) {
   }
 
   try {
+    const searches = await Promise.allSettled(
+      requestedPlatforms.map(async (platform) => ({
+        platform,
+        tavily: await tavilySearch(getTavilyQuery(platform, query, type, city), platform),
+      })),
+    );
     const entries = [];
     const answers = [];
+    const failures = [];
 
-    for (const platform of requestedPlatforms) {
-      const tavily = await tavilySearch(getTavilyQuery(platform, query, type, city), platform);
+    searches.forEach((result, index) => {
+      const platform = requestedPlatforms[index];
+      if (result.status === "rejected") {
+        failures.push(`${platform}: ${result.reason.message}`);
+        entries.push([platform, null]);
+        return;
+      }
+
+      const { tavily } = result.value;
       if (tavily.answer) answers.push(`${platform}: ${tavily.answer}`);
       const searchableText = [
         tavily.answer,
@@ -1519,7 +1690,7 @@ async function handleTavilyRatings(req, res, url) {
             }
           : null,
       ]);
-    }
+    });
 
     const resultsByPlatform = Object.fromEntries(entries);
     const poi = normalizeTavilyPoi(resultsByPlatform, query, type === "all" ? "hotel" : type, city);
@@ -1528,6 +1699,7 @@ async function handleTavilyRatings(req, res, url) {
       data: Object.keys(poi.ratings).length ? [poi] : [],
       resultsByPlatform,
       answer: answers.join("\n"),
+      warning: failures.length && !Object.keys(poi.ratings).length ? `Tavily Search 部分或全部失败：${failures.join("；")}` : undefined,
     });
   } catch (error) {
     sendJson(res, 200, {
@@ -1856,13 +2028,17 @@ async function handleYelpSearch(req, res, url) {
   }
 
   try {
-    const response = await yelpClient.search({
-      term: query,
-      location: url.searchParams.get("location") || url.searchParams.get("city") || "New York, NY",
-      categories: "restaurants",
-      limit: 6,
-      sort_by: "best_match",
-    });
+    const response = await withTimeout(
+      yelpClient.search({
+        term: query,
+        location: url.searchParams.get("location") || url.searchParams.get("city") || "New York, NY",
+        categories: "restaurants",
+        limit: 6,
+        sort_by: "best_match",
+      }),
+      15000,
+      "Yelp Fusion API",
+    );
 
     sendJson(res, 200, {
       data: (response.jsonBody.businesses || []).map(normalizeYelpBusiness),
@@ -1913,7 +2089,7 @@ async function handleYelpAgent(req, res, url) {
       : undefined;
 
   try {
-    const response = await fetch("https://api.yelp.com/ai/chat/v2", {
+    const response = await fetchWithTimeout("https://api.yelp.com/ai/chat/v2", {
       method: "POST",
       headers: {
         accept: "application/json",
@@ -1924,7 +2100,7 @@ async function handleYelpAgent(req, res, url) {
         query,
         user_context: userContext,
       }),
-    });
+    }, 20000, "Yelp AI Chat API");
     const text = await response.text();
     const data = text ? JSON.parse(text) : null;
 
@@ -1953,9 +2129,26 @@ async function handleYelpAgent(req, res, url) {
 
 function serveStatic(req, res, url) {
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-  const filePath = path.normalize(path.join(ROOT, decodeURIComponent(requested)));
 
-  if (!filePath.startsWith(ROOT)) {
+  if (!PUBLIC_STATIC_FILES.has(requested)) {
+    res.writeHead(403);
+    res.end("Forbidden");
+    return;
+  }
+
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(requested);
+  } catch {
+    res.writeHead(400);
+    res.end("Bad request");
+    return;
+  }
+
+  const filePath = path.resolve(ROOT, `.${decodedPath}`);
+  const relative = path.relative(ROOT, filePath);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     res.writeHead(403);
     res.end("Forbidden");
     return;
