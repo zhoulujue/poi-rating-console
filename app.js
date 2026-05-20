@@ -826,22 +826,11 @@ function renderVisual(poi) {
   }
 
   const isHotel = poi.type === "hotel";
-  const colors = isHotel
-    ? ["#315b9d", "#e7eef7", "#98a9c7", "#f8fafc"]
-    : ["#1d6f5f", "#f4eee1", "#c78635", "#fbfaf6"];
   const title = isHotel ? "Hotel rating visual" : "Restaurant rating visual";
 
   return `
-    <div class="visual-card" aria-label="${title}">
-      <svg viewBox="0 0 260 200" role="img" aria-hidden="true">
-        <rect width="260" height="200" fill="${colors[3]}"></rect>
-        <rect x="20" y="24" width="220" height="152" rx="8" fill="${colors[1]}" stroke="${colors[2]}"></rect>
-        <rect x="44" y="48" width="76" height="104" rx="6" fill="${colors[0]}" opacity="0.92"></rect>
-        <rect x="136" y="48" width="80" height="16" rx="4" fill="${colors[0]}" opacity="0.82"></rect>
-        <rect x="136" y="78" width="64" height="12" rx="4" fill="${colors[2]}" opacity="0.82"></rect>
-        <rect x="136" y="108" width="88" height="12" rx="4" fill="${colors[2]}" opacity="0.62"></rect>
-        <rect x="136" y="136" width="56" height="16" rx="4" fill="${colors[0]}" opacity="0.82"></rect>
-      </svg>
+    <div class="visual-card visual-fallback ${isHotel ? "is-hotel" : "is-restaurant"}" aria-label="${title}">
+      <span>${escapeHtml((poi.name || "?").slice(0, 1))}</span>
     </div>
   `;
 }
@@ -1270,59 +1259,78 @@ function renderDetail(poi) {
   const bestSource = Object.entries(poi.ratings)
     .filter(([, rating]) => rating.score > 0)
     .sort((a, b) => normalizeScore(b[1]) - normalizeScore(a[1]))[0];
+  const typeLabel = poi.type === "restaurant" ? "餐厅" : "酒店";
+  const platformNote =
+    poi.type === "restaurant" ? "Google / Yelp / Michelin / TripAdvisor" : "Google / Booking / Agoda / TripAdvisor";
+  const badgeLabel = sourceCount ? `${sourceCount}/${requiredCount} sources` : "collecting";
+  const locationText = [poi.area, poi.city].filter(Boolean).join(", ");
+  const googleMapsUrl = PLATFORM_SEARCH_URLS.Google?.(poi);
+  const primarySearchUrl = googleMapsUrl || PLATFORM_SEARCH_URLS[REQUIRED_SOURCES[poi.type][0]]?.(poi);
+  const secondarySearchUrl = REQUIRED_SOURCES[poi.type]
+    .map((source) => PLATFORM_SEARCH_URLS[source]?.(poi))
+    .find((url) => url && url !== primarySearchUrl);
 
   elements.detailView.innerHTML = `
-    <div class="detail-mobile-nav">
-      <button type="button" data-detail-nav="back" aria-label="返回列表">←</button>
-      <span>Details</span>
-    </div>
-    <div class="hero-detail">
-      <div>
-        <div class="detail-title-row">
-          <div>
-            <span class="tag">${poi.type === "restaurant" ? "餐厅" : "酒店"}</span>
-            <h2>${poi.name}</h2>
+    <div class="detail-screen">
+      <div class="hero-detail">
+        <div class="detail-photo-hero">
+          ${renderVisual(poi)}
+          <div class="detail-mobile-nav">
+            <button type="button" data-detail-nav="back" aria-label="返回列表">←</button>
+            <span>Details</span>
+            <button type="button" aria-label="收藏" class="detail-favorite">♡</button>
+          </div>
+          <div class="detail-photo-dots" aria-hidden="true">
+            <span class="is-active"></span>
+            <span></span>
+            <span></span>
+            <span></span>
           </div>
         </div>
-        <p class="description">${poi.city} · ${poi.area} · ${poi.category}。${poi.description}</p>
-        <div class="summary-grid">
-          <div class="summary-tile">
-            <span>综合百分制</span>
-            <strong>${avg}</strong>
+
+        <div class="detail-content-sheet">
+          <div class="detail-kicker">${escapeHtml(poi.category || typeLabel)} · ${escapeHtml(typeLabel)}</div>
+          <div class="detail-title-row">
+            <h2>${escapeHtml(poi.name)}</h2>
+            <span class="detail-rank-badge">${escapeHtml(badgeLabel)}</span>
           </div>
-          <div class="summary-tile">
-            <span>来源覆盖</span>
-            <strong>${sourceCount}/${requiredCount}</strong>
+          <p class="detail-meta">${escapeHtml(locationText || poi.city)} · ${escapeHtml(poi.price)} · ${escapeHtml(poi.description)}</p>
+
+          <section class="ratings-section cross-platform-card">
+            <div class="cross-platform-heading">
+              <div>
+                <span>Cross-platform</span>
+                <strong>${avg || "N/A"}<small>${avg ? " / 100" : ""}</small></strong>
+              </div>
+              <span class="platform-note">${escapeHtml(platformNote)}</span>
+            </div>
+            <div class="rating-grid">${renderRatingCards(poi)}</div>
+          </section>
+
+          ${renderKnowBeforeYouGoCard()}
+
+          <div class="summary-grid">
+            <div class="summary-tile">
+              <span>覆盖来源</span>
+              <strong>${sourceCount}/${requiredCount}</strong>
+            </div>
+            <div class="summary-tile">
+              <span>最高信号</span>
+              <strong>${bestSource ? escapeHtml(bestSource[0]) : "暂无"}</strong>
+            </div>
+            <div class="summary-tile">
+              <span>参考价格</span>
+              <strong>${escapeHtml(poi.price)}</strong>
+            </div>
           </div>
-          <div class="summary-tile">
-            <span>参考价格</span>
-            <strong>${poi.price}</strong>
+
+          <div class="detail-action-row">
+            ${primarySearchUrl ? `<a class="detail-action-primary" href="${escapeHtml(primarySearchUrl)}" target="_blank" rel="noreferrer">Open listing</a>` : ""}
+            ${secondarySearchUrl ? `<a class="detail-action-secondary" href="${escapeHtml(secondarySearchUrl)}" target="_blank" rel="noreferrer">Compare more</a>` : ""}
           </div>
         </div>
       </div>
-      ${renderVisual(poi)}
     </div>
-
-    <section class="ratings-section">
-      <div class="section-heading">
-        <h3>平台评分</h3>
-        <span class="platform-note">${poi.type === "restaurant" ? "Google / Yelp / 米其林 / TripAdvisor" : "Google / Booking / Agoda / TripAdvisor"}</span>
-      </div>
-      <div class="rating-grid">${renderRatingCards(poi)}</div>
-    </section>
-
-    ${renderKnowBeforeYouGoCard()}
-
-    <section class="insight-row">
-      <article class="insight">
-        <h3>评分解读</h3>
-        <p>${bestSource ? `${bestSource[0]} 当前表现最高，归一化后约为 ${normalizeScore(bestSource[1])} 分。` : "暂无可比较评分。"}</p>
-      </article>
-      <article class="insight">
-        <h3>接入建议</h3>
-        <p>页面已按平台拆分字段，真实环境中可把每个平台接成独立数据源，并保留更新时间与评价量用于可信度判断。</p>
-      </article>
-    </section>
   `;
 }
 

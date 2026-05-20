@@ -1653,3 +1653,457 @@ h1 {
     padding-left: 16px;
   }
 }
+
+.detail-panel {
+  overflow: hidden;
+  padding: 0;
+  background: #fffdfa;
+}
+
+.detail-screen {
+  min-height: 100%;
+  background: #fffdfa;
+}
+
+.detail-screen .hero-detail {
+  display: block;
+  padding: 0;
+  border-bottom: 0;
+}
+
+.detail-photo-hero {
+  position: relative;
+  min-height: 300px;
+  overflow: hidden;
+  background: #c9b8a3;
+}
+
+.detail-photo-hero .visual-card {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: #c9b8a3;
+}
+
+.detail-photo-hero .visual-card img {
+  height: 100%;
+  object-fit: cover;
+}
+
+.visual-fallback {
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.2), transparent 32%),
+    linear-gradient(315deg, rgba(82, 72, 60, 0.14), transparent 36%),
+    #c9b8a3;
+}
+
+.visual-fallback.is-hotel {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 34%),
+    linear-gradient(315deg, rgba(49, 91, 157, 0.16), transparent 38%),
+    #b9c2ce;
+}
+
+.visual-fallback span {
+  color: rgba(255, 253, 250, 0.78);
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: 92px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.detail-photo-dots {
+  position: absolute;
+  right: 0;
+  bottom: 18px;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.detail-photo-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.detail-photo-dots .is-active {
+  width: 24px;
+  background: #fff;
+}
+
+.detail-content-sheet {
+  padding: 26px 28px 30px;
+}
+
+.detail-kicker {
+  margin-bottom: 8px;
+  color: #8b867f;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.detail-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.detail-title-row h2 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: clamp(32px, 4.8vw, 48px);
+  line-height: 0.98;
+  letter-spacing: 0;
+}
+
+.detail-rank-badge {
+  flex: 0 0 auto;
+  margin-top: 4px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  color: #d65b1f;
+  background: #fff2eb;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.detail-meta {
+  margin: 12px 0 0;
+  color: #7b7771;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.cross-platform-card {
+  margin-top: 22px;
+  padding: 18px 20px;
+  border: 1px solid #e7dfd5;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.cross-platform-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee7de;
+}
+
+.cross-platform-heading > div {
+  min-width: 0;
+}
+
+.cross-platform-heading span:first-child {
+  display: block;
+  margin-bottom: 4px;
+  color: #8f8a83;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.cross-platform-heading strong {
+  display: block;
+  color: #1f1c18;
+  font-size: 36px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.cross-platform-heading small {
+  color: #99948c;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.cross-platform-card .platform-note {
+  max-width: 270px;
+  text-align: right;
+  line-height: 1.45;
+}
+
+.cross-platform-card .rating-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+.cross-platform-card .rating-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px 14px;
+  min-height: auto;
+  padding: 14px 0;
+  border: 0;
+  border-top: 1px solid #eee7de;
+  border-radius: 0;
+  background: transparent;
+}
+
+.cross-platform-card .rating-card:first-child {
+  border-top: 0;
+}
+
+.rating-topline {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.cross-platform-card .platform-name {
+  overflow: hidden;
+  color: #45413b;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cross-platform-card .rating-topline .tag {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  color: #d65b1f;
+  background: #fff2eb;
+  font-size: 11px;
+}
+
+.cross-platform-card .rating-value {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  margin: 0;
+  color: #1f1c18;
+  font-size: 24px;
+  text-align: right;
+}
+
+.cross-platform-card .missing .rating-value {
+  color: #9a5d00;
+  font-size: 18px;
+}
+
+.cross-platform-card .rating-bar {
+  grid-column: 1 / -1;
+  height: 5px;
+  margin-top: 1px;
+}
+
+.cross-platform-card .rating-meta {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #827d76;
+  font-size: 12px;
+}
+
+.cross-platform-card .rating-actions {
+  grid-column: 1 / -1;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.cross-platform-card .rating-actions a,
+.cross-platform-card .rating-actions button {
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: #fffdfa;
+  font-size: 12px;
+}
+
+.detail-screen .decision-card {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 0;
+  border-radius: 18px;
+  background: #fbf0e8;
+}
+
+.detail-screen .decision-card.is-warn {
+  border: 1px solid #f0c36d;
+}
+
+.detail-screen .decision-card .section-heading h3 {
+  color: #c45418;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.detail-screen .decision-summary {
+  color: #46413b;
+}
+
+.detail-screen .decision-profile-block,
+.detail-screen .decision-dimension {
+  border-color: rgba(197, 179, 160, 0.58);
+  background: rgba(255, 253, 250, 0.68);
+}
+
+.detail-screen .summary-grid {
+  margin-top: 18px;
+}
+
+.detail-screen .summary-tile {
+  min-height: 78px;
+  border-color: #e7dfd5;
+  border-radius: 16px;
+  background: #faf6ef;
+}
+
+.detail-screen .summary-tile strong {
+  overflow-wrap: anywhere;
+}
+
+.detail-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.detail-action-row a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+  padding: 0 16px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.detail-action-primary {
+  color: #fff;
+  background: #1f1c18;
+}
+
+.detail-action-secondary {
+  color: #1f1c18;
+  border: 1px solid #1f1c18;
+  background: #fffdfa;
+}
+
+@media (max-width: 980px) {
+  .detail-panel {
+    padding: 0;
+  }
+
+  .content-grid.is-detail-page .detail-panel {
+    min-height: calc(100vh - 112px);
+  }
+
+  .detail-photo-hero {
+    min-height: min(42vh, 390px);
+  }
+
+  .detail-photo-hero .visual-card {
+    min-height: min(42vh, 390px);
+    aspect-ratio: auto;
+  }
+
+  .detail-mobile-nav {
+    position: absolute;
+    top: 22px;
+    right: 22px;
+    left: 22px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .detail-mobile-nav span {
+    display: none;
+  }
+
+  .detail-mobile-nav button {
+    display: inline-grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border: 0;
+    border-radius: 50%;
+    color: #1f1c18;
+    background: rgba(255, 253, 250, 0.92);
+    font-size: 24px;
+    font-weight: 800;
+    line-height: 1;
+    box-shadow: 0 10px 24px rgba(31, 28, 24, 0.12);
+  }
+
+  .detail-mobile-nav .detail-favorite {
+    font-size: 26px;
+  }
+
+  .detail-content-sheet {
+    padding: 24px 22px calc(118px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 720px) {
+  .detail-title-row {
+    display: block;
+  }
+
+  .detail-title-row h2 {
+    font-size: clamp(31px, 11vw, 46px);
+    overflow-wrap: anywhere;
+  }
+
+  .detail-rank-badge {
+    display: inline-flex;
+    margin-top: 12px;
+    white-space: nowrap;
+  }
+
+  .cross-platform-heading {
+    display: block;
+  }
+
+  .cross-platform-card .platform-note {
+    display: block;
+    max-width: none;
+    margin-top: 8px;
+    text-align: left;
+  }
+
+  .cross-platform-card .rating-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .detail-screen .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-screen .summary-tile:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .detail-action-row {
+    grid-template-columns: 1fr;
+  }
+}
