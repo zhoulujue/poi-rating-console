@@ -42,7 +42,7 @@ button {
 
 .app-shell {
   min-height: 100vh;
-  padding: 28px;
+  padding: 28px 28px calc(104px + env(safe-area-inset-bottom));
 }
 
 .workspace {
@@ -802,16 +802,23 @@ h1 {
 }
 
 .mobile-tabbar {
-  position: absolute;
-  right: 0;
+  position: fixed;
+  right: auto;
   bottom: 0;
-  left: 0;
+  left: 50%;
+  z-index: 60;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px;
-  padding: 12px 18px 16px;
+  width: min(1360px, 100%);
+  padding: 12px 18px calc(16px + env(safe-area-inset-bottom));
   border-top: 1px solid #ede7df;
+  border-right: 1px solid #ede7df;
+  border-left: 1px solid #ede7df;
   background: rgba(255, 253, 250, 0.94);
+  box-shadow: 0 -12px 32px rgba(31, 45, 42, 0.08);
+  backdrop-filter: blur(14px);
+  transform: translateX(-50%);
 }
 
 .mobile-tabbar button {
@@ -1431,7 +1438,7 @@ h1 {
 
 @media (max-width: 720px) {
   .app-shell {
-    padding: 16px;
+    padding: 16px 16px calc(96px + env(safe-area-inset-bottom));
   }
 
   .freshness {
