@@ -3,7 +3,7 @@ const REQUIRED_SOURCES = {
   hotel: ["Google", "Booking", "Agoda", "TripAdvisor"],
 };
 
-const PROVIDER_BATCH_SOURCES = ["tripadvisor", "booking", "yelp", "brave", "tavily", "gemini"];
+const PROVIDER_BATCH_SOURCES = ["tripadvisor", "booking", "yelp", "michelin", "brave", "tavily", "gemini"];
 
 const USER_RATINGS_STORAGE_KEY = "poi-ratings:user-ratings";
 
@@ -129,6 +129,7 @@ const state = {
   tripAdvisorPois: [],
   bookingPois: [],
   yelpPois: [],
+  michelinPois: [],
   geminiPois: [],
   bravePois: [],
   tavilyPois: [],
@@ -136,6 +137,7 @@ const state = {
   isSearchingTripAdvisor: false,
   isSearchingBooking: false,
   isSearchingYelp: false,
+  isSearchingMichelin: false,
   isSearchingGemini: false,
   isSearchingBrave: false,
   isSearchingTavily: false,
@@ -148,6 +150,8 @@ const state = {
   bookingError: "",
   yelpStatus: "ready",
   yelpError: "",
+  michelinStatus: "ready",
+  michelinError: "",
   geminiStatus: "ready",
   geminiError: "",
   geminiPlatformStatus: {},
@@ -180,6 +184,7 @@ const elements = {
   tripAdvisorStatus: document.querySelector("#tripAdvisorStatus"),
   bookingStatus: document.querySelector("#bookingStatus"),
   yelpStatus: document.querySelector("#yelpStatus"),
+  michelinStatus: document.querySelector("#michelinStatus"),
   geminiStatus: document.querySelector("#geminiStatus"),
   braveStatus: document.querySelector("#braveStatus"),
   tavilyStatus: document.querySelector("#tavilyStatus"),
@@ -197,6 +202,8 @@ let bookingSearchTimer = null;
 let bookingSearchToken = 0;
 let yelpSearchTimer = null;
 let yelpSearchToken = 0;
+let michelinSearchTimer = null;
+let michelinSearchToken = 0;
 let geminiSearchTimer = null;
 let geminiSearchToken = 0;
 let braveSearchTimer = null;
@@ -316,6 +323,7 @@ function clearProviderResults() {
   clearTimeout(tripAdvisorSearchTimer);
   clearTimeout(bookingSearchTimer);
   clearTimeout(yelpSearchTimer);
+  clearTimeout(michelinSearchTimer);
   clearTimeout(geminiSearchTimer);
   clearTimeout(braveSearchTimer);
   clearTimeout(tavilySearchTimer);
@@ -324,6 +332,7 @@ function clearProviderResults() {
   tripAdvisorSearchToken += 1;
   bookingSearchToken += 1;
   yelpSearchToken += 1;
+  michelinSearchToken += 1;
   geminiSearchToken += 1;
   braveSearchToken += 1;
   tavilySearchToken += 1;
@@ -335,6 +344,7 @@ function clearProviderResults() {
   state.tripAdvisorPois = [];
   state.bookingPois = [];
   state.yelpPois = [];
+  state.michelinPois = [];
   state.geminiPois = [];
   state.bravePois = [];
   state.tavilyPois = [];
@@ -344,6 +354,8 @@ function clearProviderResults() {
   state.bookingError = "";
   state.yelpStatus = "ready";
   state.yelpError = "";
+  state.michelinStatus = "ready";
+  state.michelinError = "";
   state.geminiStatus = "ready";
   state.geminiError = "";
   state.geminiPlatformStatus = {};
@@ -404,6 +416,7 @@ function mergeProviderRatingsIntoPoi(basePoi) {
     ...state.tavilyPois,
     ...state.yelpPois,
     ...state.bookingPois,
+    ...state.michelinPois,
     ...state.tripAdvisorPois,
   ];
 
@@ -412,6 +425,7 @@ function mergeProviderRatingsIntoPoi(basePoi) {
     merged.tags = Array.from(new Set([...merged.tags, ...poi.tags]));
     merged.tripAdvisorUrl = merged.tripAdvisorUrl || poi.tripAdvisorUrl;
     merged.bookingUrl = merged.bookingUrl || poi.bookingUrl;
+    merged.michelinUrl = merged.michelinUrl || poi.michelinUrl;
     merged.photoUrl = merged.photoUrl || poi.photoUrl;
   });
 
@@ -421,7 +435,7 @@ function mergeProviderRatingsIntoPoi(basePoi) {
 function mergeLivePois() {
   const merged = new Map();
 
-  [...state.googlePois, ...state.tripAdvisorPois, ...state.bookingPois, ...state.yelpPois, ...state.geminiPois, ...state.bravePois, ...state.tavilyPois].forEach((poi) => {
+  [...state.googlePois, ...state.tripAdvisorPois, ...state.bookingPois, ...state.yelpPois, ...state.michelinPois, ...state.geminiPois, ...state.bravePois, ...state.tavilyPois].forEach((poi) => {
     const key = getPoiMergeKey(poi);
     const existing = merged.get(key);
 
@@ -434,6 +448,7 @@ function mergeLivePois() {
     existing.tags = Array.from(new Set([...existing.tags, ...poi.tags]));
     existing.tripAdvisorUrl = existing.tripAdvisorUrl || poi.tripAdvisorUrl;
     existing.bookingUrl = existing.bookingUrl || poi.bookingUrl;
+    existing.michelinUrl = existing.michelinUrl || poi.michelinUrl;
     existing.photoUrl = existing.photoUrl || poi.photoUrl;
     existing.description =
       existing.description.includes("其他平台") && !poi.description.includes("其他平台")
@@ -846,6 +861,7 @@ function getProviderEvidence() {
     ...state.geminiPois,
     ...state.yelpPois,
     ...state.bookingPois,
+    ...state.michelinPois,
   ];
 
   return {
@@ -870,7 +886,7 @@ function getProviderEvidence() {
       ratings: poi.ratings,
       reviewsPreview: poi.reviewsPreview,
       photosPreview: poi.photosPreview,
-      urls: [poi.tripAdvisorUrl, poi.bookingUrl, poi.yelpUrl, poi.sourceUrls].flat().filter(Boolean),
+      urls: [poi.tripAdvisorUrl, poi.bookingUrl, poi.yelpUrl, poi.michelinUrl, poi.sourceUrls].flat().filter(Boolean),
     })),
   };
 }
@@ -1105,6 +1121,7 @@ function getRatingSourceState(rating, source) {
   const geminiStatus = state.geminiPlatformStatus[source];
   const braveStatus = state.bravePlatformStatus[source];
   const tavilyStatus = state.tavilyPlatformStatus[source];
+  const michelinStatus = source === "Michelin" ? state.michelinStatus : null;
 
   if (rating?.source === "user") {
     return { tag: "用户补录", note: "用户手动录入" };
@@ -1124,6 +1141,14 @@ function getRatingSourceState(rating, source) {
 
   if (rating?.source === "tavily") {
     return { tag: "Tavily 成功", note: "Tavily Search 返回该平台评分" };
+  }
+
+  if (rating?.source === "michelin-my-maps") {
+    return { tag: "Michelin 数据集", note: "来自 ngshiheng/michelin-my-maps 本地数据源" };
+  }
+
+  if (michelinStatus === "searching") {
+    return { tag: "Michelin 查询中", note: "正在查询本地 Michelin My Maps 数据集" };
   }
 
   if (tavilyStatus?.status === "searching") {
@@ -1160,6 +1185,14 @@ function getRatingSourceState(rating, source) {
 
   if (geminiStatus?.status === "missing") {
     return { tag: "Gemini 无结果", note: "Gemini Search 未找到该平台评分" };
+  }
+
+  if (michelinStatus === "error") {
+    return { tag: "Michelin 失败", note: state.michelinError || "Michelin 数据集查询失败" };
+  }
+
+  if (source === "Michelin" && state.providerLookup && state.providerPendingCount === 0 && !rating) {
+    return { tag: "Michelin 无结果", note: "Michelin My Maps 数据集中未匹配到该 POI" };
   }
 
   if (rating) {
@@ -1311,6 +1344,19 @@ function renderYelpStatus() {
   elements.yelpStatus.innerHTML = `<span class="status-dot"></span>${label}`;
 }
 
+function renderMichelinStatus() {
+  const isUnavailable = state.michelinStatus === "error" || isFileRuntime();
+  elements.michelinStatus.classList.toggle("is-warn", isUnavailable);
+
+  const label = {
+    ready: "Michelin 数据集已准备",
+    searching: "正在查询 Michelin 数据集",
+    error: state.michelinError || "Michelin 数据集暂不可用",
+  }[isFileRuntime() ? "error" : state.michelinStatus];
+
+  elements.michelinStatus.innerHTML = `<span class="status-dot"></span>${label}`;
+}
+
 function renderGeminiStatus() {
   const isUnavailable = state.geminiStatus === "error" || isFileRuntime();
   elements.geminiStatus.classList.toggle("is-warn", isUnavailable);
@@ -1356,6 +1402,7 @@ function render() {
     state.tripAdvisorError = "TripAdvisor 需要通过本地代理访问";
     state.bookingError = "Booking 需要通过本地代理访问";
     state.yelpError = "Yelp 需要通过本地代理访问";
+    state.michelinError = "Michelin 数据集需要通过本地代理访问";
     state.geminiError = "Gemini Search 需要通过本地代理访问";
     state.braveError = "Brave Search 需要通过本地代理访问";
     state.tavilyError = "Tavily Search 需要通过本地代理访问";
@@ -1381,6 +1428,7 @@ function render() {
   renderTripAdvisorStatus();
   renderBookingStatus();
   renderYelpStatus();
+  renderMichelinStatus();
   renderGeminiStatus();
   renderBraveStatus();
   renderTavilyStatus();
@@ -1478,6 +1526,7 @@ function getGoogleLocationHints() {
     "brave search",
     "gemini search",
     "google places",
+    "michelin guide",
     "tavily search",
     "tripadvisor",
     "yelp",
@@ -1489,6 +1538,7 @@ function getGoogleLocationHints() {
     ...state.geminiPois,
     ...state.yelpPois,
     ...state.bookingPois,
+    ...state.michelinPois,
   ];
   const seen = new Set();
 
@@ -1857,6 +1907,71 @@ function searchYelp(batchId) {
   }, 450);
 }
 
+function searchMichelin(batchId) {
+  clearTimeout(michelinSearchTimer);
+
+  michelinSearchTimer = setTimeout(async () => {
+    const lookup = getProviderLookup();
+    const query = lookup?.query?.trim() || "";
+    const type = lookup?.type || state.type;
+    if (isFileRuntime()) {
+      state.michelinPois = [];
+      state.isSearchingMichelin = false;
+      state.michelinStatus = "error";
+      state.michelinError = "Michelin 数据集需要通过本地代理访问";
+      finishProviderBatchSource(batchId);
+      render();
+      return;
+    }
+
+    if (type === "hotel" || query.length < 2) {
+      state.michelinPois = [];
+      state.isSearchingMichelin = false;
+      state.michelinStatus = "ready";
+      state.michelinError = "";
+      finishProviderBatchSource(batchId);
+      render();
+      return;
+    }
+
+    const token = ++michelinSearchToken;
+    state.isSearchingMichelin = true;
+    state.michelinStatus = "searching";
+    render();
+
+    try {
+      const params = getProviderSearchParams(lookup, type);
+      const response = await fetch(`/api/michelin/search?${params}`);
+      const payload = await response.json();
+
+      if (token !== michelinSearchToken) return;
+
+      if (!response.ok) {
+        throw new Error(payload.error || `Michelin 返回 ${response.status}`);
+      }
+
+      if (payload.warning) {
+        throw new Error(payload.warning);
+      }
+
+      state.michelinPois = payload.data || [];
+      state.michelinStatus = "ready";
+      state.michelinError = "";
+    } catch (error) {
+      if (token !== michelinSearchToken) return;
+      state.michelinPois = [];
+      state.michelinStatus = "error";
+      state.michelinError = error.message;
+    } finally {
+      if (token === michelinSearchToken) {
+        state.isSearchingMichelin = false;
+        finishProviderBatchSource(batchId);
+        render();
+      }
+    }
+  }, 420);
+}
+
 function searchGeminiRatings(batchId) {
   clearTimeout(geminiSearchTimer);
 
@@ -2142,6 +2257,7 @@ function searchProviderSourcesForSelected(poi) {
   searchTripAdvisor(batchId);
   searchBooking(batchId);
   searchYelp(batchId);
+  searchMichelin(batchId);
   searchBraveRatings(batchId);
   searchTavilyRatings(batchId);
   searchGeminiRatings(batchId);

@@ -31,3 +31,4 @@ Private local web app for comparing POI ratings across Google Places, TripAdviso
 
 - `config.js` and `server-config.js` are intentionally ignored so API keys stay local.
 - The full provider search and Know Before You Go summary require the Node server; a static GitHub Pages deployment alone cannot run these proxy endpoints.
+- Michelin restaurant data is vendored from [`ngshiheng/michelin-my-maps`](https://github.com/ngshiheng/michelin-my-maps), which is published under the MIT license. The upstream license is included at `data/michelin_my_maps.LICENSE`.

@@ -35,6 +35,7 @@ const ROOT = __dirname;
 const CACHE_DIR = process.env.POI_CACHE_DIR || path.join(ROOT, ".data");
 const CACHE_FILE = process.env.POI_CACHE_FILE || path.join(CACHE_DIR, "poi-cache.json");
 const CACHE_ENTRIES_DIR = process.env.POI_CACHE_ENTRIES_DIR || path.join(CACHE_DIR, "entries");
+const MICHELIN_DATA_FILE = process.env.MICHELIN_DATA_FILE || path.join(ROOT, "data", "michelin_my_maps.csv");
 const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 10000000);
 const CACHE_MEMORY_MAX_ENTRIES = Number(process.env.POI_CACHE_MEMORY_MAX_ENTRIES || 5000);
 const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_LIMIT_BYTES || 50 * 1024 * 1024);
@@ -44,6 +45,8 @@ const BOOKING_BASE = bookingUseSandbox
   : "https://demandapi.booking.com/3.1";
 const CHROME_EXECUTABLE = process.env.CHROME_EXECUTABLE || "";
 const yelpClient = yelpApiKey ? yelp.client(yelpApiKey) : null;
+let michelinRows = null;
+let michelinLoadError = null;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -286,6 +289,7 @@ function getProviderTargetPlatforms(source, type) {
   if (source === "tripadvisor") return ["TripAdvisor"];
   if (source === "booking") return type === "restaurant" ? [] : ["Booking"];
   if (source === "yelp") return type === "hotel" ? [] : ["Yelp"];
+  if (source === "michelin") return type === "hotel" ? [] : ["Michelin"];
   if (source === "brave" || source === "tavily" || source === "gemini") return getGeminiPlatforms(type);
   return [];
 }
@@ -481,6 +485,292 @@ function normalizeLookupKey(value) {
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ");
+}
+
+function normalizeMichelinSearchText(value) {
+  return (value || "")
+    .toString()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ");
+}
+
+const MICHELIN_SEARCH_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "at",
+  "by",
+  "da",
+  "de",
+  "der",
+  "di",
+  "do",
+  "du",
+  "el",
+  "en",
+  "in",
+  "la",
+  "le",
+  "les",
+  "of",
+  "restaurant",
+  "the",
+]);
+
+function getMichelinSearchTokens(value) {
+  return normalizeMichelinSearchText(value)
+    .split(" ")
+    .filter((token) => token.length > 1 && !MICHELIN_SEARCH_STOP_WORDS.has(token));
+}
+
+const MICHELIN_GENERIC_CITY_KEYS = new Set([
+  "brave search",
+  "gemini search",
+  "google places",
+  "michelin guide",
+  "tavily search",
+  "tripadvisor",
+  "yelp",
+]);
+
+function getMichelinCityKey(value) {
+  const key = normalizeMichelinSearchText(value);
+  if (key.length < 3 || MICHELIN_GENERIC_CITY_KEYS.has(key)) return "";
+  return key;
+}
+
+function michelinCityMatches(row, cityKey) {
+  if (!cityKey) return true;
+
+  const locationText = `${row.normalizedLocation} ${row.normalizedAddress}`.trim();
+  if (locationText.includes(cityKey) || cityKey.includes(row.normalizedLocation)) {
+    return true;
+  }
+
+  const cityTokens = getMichelinSearchTokens(cityKey).filter((token) => token.length > 2);
+  if (!cityTokens.length) return true;
+  return cityTokens.some((token) => locationText.includes(token));
+}
+
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[index + 1] === '"') {
+          cell += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n" || char === "\r") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      if (char === "\r" && text[index + 1] === "\n") index += 1;
+    } else {
+      cell += char;
+    }
+  }
+
+  if (cell || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
+
+  return rows.filter((cells) => cells.some((value) => value.trim()));
+}
+
+function getMichelinAwardRank(award) {
+  if (/3\s+stars?/i.test(award)) return 500;
+  if (/2\s+stars?/i.test(award)) return 400;
+  if (/1\s+star/i.test(award)) return 300;
+  if (/bib\s+gourmand/i.test(award)) return 200;
+  if (/selected/i.test(award)) return 100;
+  return 0;
+}
+
+function loadMichelinRows() {
+  if (michelinRows) return michelinRows;
+  if (michelinLoadError) throw michelinLoadError;
+
+  try {
+    const text = fs.readFileSync(MICHELIN_DATA_FILE, "utf8");
+    const rows = parseCsvRows(text);
+    const headers = rows[0] || [];
+    const headerIndex = new Map(headers.map((header, index) => [header, index]));
+    const pick = (cells, header) => cells[headerIndex.get(header)]?.trim() || "";
+
+    michelinRows = rows.slice(1).map((cells) => {
+      const facilitiesAndServices = pick(cells, "FacilitiesAndServices")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const row = {
+        name: pick(cells, "Name"),
+        address: pick(cells, "Address"),
+        location: pick(cells, "Location"),
+        price: pick(cells, "Price"),
+        cuisine: pick(cells, "Cuisine"),
+        longitude: Number(pick(cells, "Longitude")),
+        latitude: Number(pick(cells, "Latitude")),
+        phoneNumber: pick(cells, "PhoneNumber"),
+        url: pick(cells, "Url"),
+        websiteUrl: pick(cells, "WebsiteUrl"),
+        award: pick(cells, "Award"),
+        greenStar: pick(cells, "GreenStar") === "1",
+        facilitiesAndServices,
+        description: pick(cells, "Description"),
+      };
+
+      const normalizedName = normalizeMichelinSearchText(row.name);
+      const normalizedLocation = normalizeMichelinSearchText(row.location);
+      const normalizedAddress = normalizeMichelinSearchText(row.address);
+      return {
+        ...row,
+        normalizedName,
+        normalizedLocation,
+        normalizedAddress,
+        normalizedAll: normalizeMichelinSearchText([
+          row.name,
+          row.address,
+          row.location,
+          row.cuisine,
+          row.award,
+        ].filter(Boolean).join(" ")),
+        nameTokens: new Set(getMichelinSearchTokens(row.name)),
+        allTokens: new Set(getMichelinSearchTokens(`${row.name} ${row.location} ${row.address}`)),
+        awardRank: getMichelinAwardRank(row.award),
+      };
+    }).filter((row) => row.name);
+
+    return michelinRows;
+  } catch (error) {
+    michelinLoadError = error;
+    throw error;
+  }
+}
+
+function normalizeMichelinRating(row) {
+  const award = row.award || "Michelin Guide";
+  const max = 3;
+
+  if (/3\s+stars?/i.test(award)) {
+    return { score: 3, max, label: "3 星", reviews: null };
+  }
+
+  if (/2\s+stars?/i.test(award)) {
+    return { score: 2, max, label: "2 星", reviews: null };
+  }
+
+  if (/1\s+star/i.test(award)) {
+    return { score: 1, max, label: "1 星", reviews: null };
+  }
+
+  if (/bib\s+gourmand/i.test(award)) {
+    return { score: 0, max, label: "Bib Gourmand", reviews: null };
+  }
+
+  if (/selected/i.test(award)) {
+    return { score: 0, max, label: "入选", reviews: null };
+  }
+
+  return { score: 0, max, label: award, reviews: null };
+}
+
+function normalizeMichelinPoi(row) {
+  const rating = normalizeMichelinRating(row);
+  const locationParts = row.location.split(",").map((part) => part.trim()).filter(Boolean);
+  const city = locationParts[0] || row.location || "Michelin Guide";
+  const category = [row.cuisine, row.award].filter(Boolean).join(" · ") || "Michelin Guide 餐厅";
+  const description = row.description || `${row.name} 收录于 MICHELIN Guide。`;
+  const tags = ["Michelin", row.award, row.greenStar ? "Green Star" : null, row.cuisine].filter(Boolean);
+  const sourceUrls = [row.url, row.websiteUrl].filter(Boolean);
+
+  return {
+    id: `michelin-${normalizeLookupKey(`${row.name}-${row.location}`)}`,
+    type: "restaurant",
+    name: row.name,
+    city,
+    area: row.address || row.location || "Michelin Guide",
+    category,
+    description,
+    price: row.price || "暂无价格等级",
+    tags,
+    michelinUrl: row.url,
+    sourceUrls,
+    latitude: Number.isFinite(row.latitude) ? row.latitude : undefined,
+    longitude: Number.isFinite(row.longitude) ? row.longitude : undefined,
+    facilitiesAndServices: row.facilitiesAndServices,
+    ratings: {
+      Michelin: {
+        ...rating,
+        updated: "Michelin My Maps",
+        source: "michelin-my-maps",
+        sourceUrl: row.url,
+      },
+    },
+  };
+}
+
+function scoreMichelinRow(row, queryKey, queryTokens, cityKey) {
+  if (cityKey && !michelinCityMatches(row, cityKey)) return 0;
+
+  let score = 0;
+  let nameScore = 0;
+  const name = row.normalizedName;
+
+  if (name === queryKey) {
+    nameScore += 5000;
+  } else if (name.startsWith(queryKey)) {
+    nameScore += 3000;
+  } else if (name.includes(queryKey)) {
+    nameScore += 2200;
+  } else if (queryKey.includes(name) && name.length > 3) {
+    nameScore += 1800;
+  }
+
+  const matchedNameTokens = queryTokens.filter((token) => row.nameTokens.has(token));
+  const tokenRatio = queryTokens.length ? matchedNameTokens.length / queryTokens.length : 0;
+  if (!nameScore && tokenRatio < 0.5) return 0;
+
+  score += nameScore;
+  if (queryTokens.length && matchedNameTokens.length) {
+    score += Math.round(tokenRatio * 1100);
+    score += matchedNameTokens.length * 120;
+  }
+
+  if (row.normalizedAll.includes(queryKey)) {
+    score += 350;
+  }
+
+  if (cityKey) score += 700;
+
+  if (score > 0) score += row.awardRank;
+  return score;
 }
 
 function getPlatformSearchUrl(platform, query, city) {
@@ -1923,6 +2213,49 @@ async function handleTripAdvisorSearch(req, res, url) {
   }
 }
 
+function handleMichelinSearch(req, res, url) {
+  const type = url.searchParams.get("type") || "all";
+  if (type === "hotel") {
+    sendJson(res, 200, { data: [] });
+    return;
+  }
+
+  const query = url.searchParams.get("q")?.trim() || "";
+  if (query.length < 2) {
+    sendJson(res, 200, { data: [] });
+    return;
+  }
+
+  try {
+    const city = url.searchParams.get("city")?.trim() || url.searchParams.get("location")?.trim() || "";
+    const queryKey = normalizeMichelinSearchText(query);
+    const cityKey = getMichelinCityKey(city);
+    const queryTokens = getMichelinSearchTokens(query);
+    const matches = loadMichelinRows()
+      .map((row) => ({
+        row,
+        score: scoreMichelinRow(row, queryKey, queryTokens, cityKey),
+      }))
+      .filter((match) => match.score >= 450)
+      .sort((a, b) => b.score - a.score || b.row.awardRank - a.row.awardRank)
+      .slice(0, 8)
+      .map((match) => normalizeMichelinPoi(match.row));
+
+    sendJson(res, 200, {
+      data: matches,
+      connector: {
+        name: "ngshiheng/michelin-my-maps",
+        dataset: "data/michelin_my_maps.csv",
+        license: "MIT",
+      },
+    });
+  } catch (error) {
+    sendJson(res, 502, {
+      error: `Michelin 数据源不可用：${error.message}`,
+    });
+  }
+}
+
 function getBookingAccommodationIds(url) {
   const directId = url.searchParams.get("accommodation_id");
   if (directId) return [Number(directId)].filter(Boolean);
@@ -2186,6 +2519,12 @@ function handleRequest(req, res) {
   if (url.pathname === "/api/yelp/search") {
     if (maybeServeCachedProvider(res, url, "yelp")) return;
     handleYelpSearch(req, res, url);
+    return;
+  }
+
+  if (url.pathname === "/api/michelin/search") {
+    if (maybeServeCachedProvider(res, url, "michelin")) return;
+    handleMichelinSearch(req, res, url);
     return;
   }
 
