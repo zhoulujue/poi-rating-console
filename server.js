@@ -183,6 +183,10 @@ function startInflightCacheWrite(key) {
     inflightCacheWrites.delete(key);
   });
 
+  promise.catch(() => {
+    // A failing upstream request should notify any waiting duplicate requests,
+    // but it should never become an unhandled rejection that stops the server.
+  });
   inflightCacheWrites.set(key, { promise, resolve, reject });
   return promise;
 }

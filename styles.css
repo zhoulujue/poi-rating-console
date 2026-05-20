@@ -1327,6 +1327,55 @@ h1 {
   .visual-card {
     min-height: 150px;
   }
+
+  .detail-panel {
+    overflow: hidden;
+    padding: 22px;
+  }
+
+  .hero-detail {
+    gap: 16px;
+    padding-bottom: 18px;
+  }
+
+  .visual-card {
+    order: -1;
+    width: 100%;
+    min-height: 0;
+    max-height: 320px;
+    aspect-ratio: 16 / 10;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .summary-tile {
+    min-height: 76px;
+    padding: 12px;
+  }
+
+  .summary-tile strong {
+    overflow-wrap: anywhere;
+  }
+
+  .rating-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-profile {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-dimension-grid,
+  .decision-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-card {
+    overflow: hidden;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1406,14 +1455,115 @@ h1 {
   }
 
   .section-heading {
+    flex-direction: column;
     align-items: flex-start;
   }
 
   .decision-actions {
+    width: 100%;
     flex-wrap: wrap;
+    justify-content: space-between;
   }
 
   .detail-panel {
-    padding: 18px;
+    padding: 16px;
+  }
+
+  .hero-detail {
+    gap: 14px;
+    padding-bottom: 16px;
+  }
+
+  .detail-panel h2 {
+    margin-bottom: 8px;
+    font-size: clamp(34px, 12vw, 46px);
+  }
+
+  .description {
+    font-size: 15px;
+    line-height: 1.62;
+  }
+
+  .visual-card {
+    max-height: none;
+    aspect-ratio: 4 / 3;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .summary-tile:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .summary-tile {
+    min-height: 70px;
+    padding: 10px;
+  }
+
+  .summary-tile span {
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+
+  .summary-tile strong {
+    font-size: 22px;
+  }
+
+  .ratings-section {
+    margin-top: 18px;
+  }
+
+  .rating-grid {
+    gap: 10px;
+  }
+
+  .rating-card {
+    min-height: auto;
+    padding: 14px;
+  }
+
+  .rating-topline {
+    align-items: center;
+  }
+
+  .rating-value {
+    margin: 14px 0 8px;
+    font-size: 32px;
+  }
+
+  .rating-actions a,
+  .rating-actions button {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+
+  .decision-card {
+    margin-top: 14px;
+    padding: 14px;
+  }
+
+  .decision-summary {
+    font-size: 15px;
+    line-height: 1.58;
+  }
+
+  .decision-profile,
+  .decision-dimension-grid,
+  .decision-grid {
+    gap: 10px;
+  }
+
+  .decision-profile-block,
+  .decision-dimension {
+    padding: 12px;
+  }
+
+  .decision-profile ul,
+  .decision-takeaways ul,
+  .decision-grid ul {
+    padding-left: 16px;
   }
 }

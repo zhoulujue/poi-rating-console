@@ -190,6 +190,7 @@ const state = {
   type: "all",
   selectedId: null,
   userSelectedPoi: false,
+  pendingDetailScroll: false,
   selectedScene: "",
   homeSearchStatus: "idle",
   homeSearchError: "",
@@ -265,6 +266,7 @@ const elements = {
   trendingCity: document.querySelector("#trendingCity"),
   trendingGrid: document.querySelector("#trendingGrid"),
   poiList: document.querySelector("#poiList"),
+  detailPanel: document.querySelector(".detail-panel"),
   detailView: document.querySelector("#detailView"),
   resultCount: document.querySelector("#resultCount"),
   resultsTitle: document.querySelector("#resultsTitle"),
@@ -412,6 +414,21 @@ function getPoiRank(poi, normalizedQuery) {
   if (poi.ratings.Booking?.score > 0 || poi.ratings.Agoda?.score > 0) rank += 80;
 
   return rank;
+}
+
+function scrollDetailIntoViewIfCompact() {
+  if (!elements.detailPanel || !window.matchMedia?.("(max-width: 980px)").matches) return;
+
+  const scrollToDetail = () => {
+    const top = window.scrollY + elements.detailPanel.getBoundingClientRect().top - 8;
+    window.scrollTo(0, Math.max(0, top));
+  };
+
+  requestAnimationFrame(() => {
+    scrollToDetail();
+    setTimeout(scrollToDetail, 250);
+    setTimeout(scrollToDetail, 800);
+  });
 }
 
 function getUserRatingKey(poi, source) {
@@ -613,6 +630,7 @@ function getFilteredPois() {
 function selectPoi(id) {
   state.selectedId = id;
   state.userSelectedPoi = true;
+  state.pendingDetailScroll = true;
   const selectedPoi = getFilteredPois().find((poi) => poi.id === id);
   const cacheIdentity = selectedPoi ? getKnowBeforeCacheIdentity(selectedPoi, selectedPoi) : null;
   state.providerLookup = selectedPoi
@@ -1719,6 +1737,11 @@ function render() {
   renderGeminiStatus();
   renderBraveStatus();
   renderTavilyStatus();
+
+  if (state.pendingDetailScroll && state.selectedId) {
+    state.pendingDetailScroll = false;
+    scrollDetailIntoViewIfCompact();
+  }
 }
 
 function inferPoiType(types = []) {
@@ -1829,7 +1852,9 @@ function initializePlacesService() {
   googleAutocompleteService = new google.maps.places.AutocompleteService();
   state.googleStatus = "ready";
   render();
-  searchGooglePlaces();
+  if (state.homeSearchStatus === "idle") {
+    searchGooglePlaces();
+  }
 }
 
 function getGoogleRequestType() {
@@ -2029,6 +2054,13 @@ function searchGooglePlaces() {
   clearTimeout(googleSearchTimer);
 
   googleSearchTimer = setTimeout(async () => {
+    if (state.homeSearchStatus !== "idle") {
+      state.isSearchingGoogle = false;
+      if (state.googleStatus !== "error") state.googleStatus = googlePlacesService ? "ready" : "loading";
+      render();
+      return;
+    }
+
     const query = state.query.trim();
     if (!googlePlacesService || query.length < 2) {
       state.googlePois = [];
