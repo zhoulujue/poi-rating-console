@@ -4,6 +4,7 @@ const REQUIRED_SOURCES = {
 };
 
 const BUDDY_EMBED_URL = "https://dazigo-v2.vercel.app/";
+const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const PROVIDER_BATCH_SOURCES = ["tripadvisor", "booking", "yelp", "michelin", "brave", "tavily", "gemini"];
 
 const USER_RATINGS_STORAGE_KEY = "poi-ratings:user-ratings";
@@ -247,6 +248,11 @@ const state = {
   routePlanningError: "",
   routePlan: null,
   routePlanWarning: "",
+  authStatus: "idle",
+  authError: "",
+  currentUser: null,
+  favorites: [],
+  googleClientConfigured: false,
   aiIntent: null,
   aiCandidates: [],
   providerLookup: null,
@@ -351,6 +357,17 @@ const elements = {
   routeResultStatus: document.querySelector("#routeResultStatus"),
   routeStartButton: document.querySelector("#routeStartButton"),
   routeReplanButton: document.querySelector("#routeReplanButton"),
+  meView: document.querySelector("#meView"),
+  meSignedOut: document.querySelector("#meSignedOut"),
+  googleSignInButton: document.querySelector("#googleSignInButton"),
+  meAuthStatus: document.querySelector("#meAuthStatus"),
+  meProfile: document.querySelector("#meProfile"),
+  meAvatar: document.querySelector("#meAvatar"),
+  meName: document.querySelector("#meName"),
+  meEmail: document.querySelector("#meEmail"),
+  meLogoutButton: document.querySelector("#meLogoutButton"),
+  meFavoriteCount: document.querySelector("#meFavoriteCount"),
+  meFavoritesList: document.querySelector("#meFavoritesList"),
   nearYouCity: document.querySelector("#nearYouCity"),
   nearYouRail: document.querySelector("#nearYouRail"),
   trendingCity: document.querySelector("#trendingCity"),
@@ -392,6 +409,8 @@ let exploreMapSearchToken = 0;
 let routeSearchTimer = null;
 let routeSearchToken = 0;
 let routePlanToken = 0;
+let googleIdentityLoadPromise = null;
+let googleSignInInitialized = false;
 let googleFallbackTimer = null;
 let homeSearchToken = 0;
 let tripAdvisorSearchTimer = null;
@@ -1485,6 +1504,8 @@ function renderDetail(poi) {
   const secondarySearchUrl = REQUIRED_SOURCES[poi.type]
     .map((source) => PLATFORM_SEARCH_URLS[source]?.(poi))
     .find((url) => url && url !== primarySearchUrl);
+  const isSaved = isFavoritePoi(poi);
+  const favoriteLabel = isSaved ? "取消收藏" : "收藏";
 
   elements.detailView.innerHTML = `
     <div class="detail-screen">
@@ -1494,7 +1515,7 @@ function renderDetail(poi) {
           <div class="detail-mobile-nav">
             <button type="button" data-detail-nav="back" aria-label="返回列表">←</button>
             <span>Details</span>
-            <button type="button" aria-label="收藏" class="detail-favorite">♡</button>
+            <button type="button" aria-label="${favoriteLabel}" aria-pressed="${isSaved}" data-favorite-action="toggle" data-poi-id="${escapeHtml(poi.id)}" class="detail-favorite ${isSaved ? "is-saved" : ""}">${isSaved ? "♥" : "♡"}</button>
           </div>
           <div class="detail-photo-dots" aria-hidden="true">
             <span class="is-active"></span>
@@ -1508,7 +1529,10 @@ function renderDetail(poi) {
           <div class="detail-kicker">${escapeHtml(poi.category || typeLabel)} · ${escapeHtml(typeLabel)}</div>
           <div class="detail-title-row">
             <h2>${escapeHtml(poi.name)}</h2>
-            <span class="detail-rank-badge">${escapeHtml(badgeLabel)}</span>
+            <div class="detail-title-actions">
+              <span class="detail-rank-badge">${escapeHtml(badgeLabel)}</span>
+              <button type="button" aria-label="${favoriteLabel}" aria-pressed="${isSaved}" data-favorite-action="toggle" data-poi-id="${escapeHtml(poi.id)}" class="detail-inline-favorite ${isSaved ? "is-saved" : ""}">${isSaved ? "♥" : "♡"}</button>
+            </div>
           </div>
           <p class="detail-meta">${escapeHtml(locationText || poi.city)} · ${escapeHtml(poi.price)} · ${escapeHtml(poi.description)}</p>
 
@@ -2904,6 +2928,261 @@ function renderRouteState() {
   requestAnimationFrame(prepareRouteMap);
 }
 
+function getGoogleClientId() {
+  return window.POI_RATINGS_CONFIG?.googleClientId || "";
+}
+
+function loadGoogleIdentityScript() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  if (googleIdentityLoadPromise) return googleIdentityLoadPromise;
+
+  googleIdentityLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = GOOGLE_IDENTITY_SCRIPT_URL;
+    script.async = true;
+    script.defer = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Google 登录脚本加载失败。"));
+    document.head.append(script);
+  });
+  return googleIdentityLoadPromise;
+}
+
+async function initializeGoogleSignIn() {
+  if (state.currentUser || googleSignInInitialized || !elements.googleSignInButton) return;
+  if (state.authStatus === "loading") return;
+  const clientId = getGoogleClientId();
+  if (!clientId || !state.googleClientConfigured) {
+    googleSignInInitialized = true;
+    state.googleClientConfigured = false;
+    state.authError = "需要在 config.js 和 server-config.js 配置 Google OAuth Client ID。";
+    render();
+    return;
+  }
+
+  try {
+    await loadGoogleIdentityScript();
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: handleGoogleCredential,
+    });
+    elements.googleSignInButton.innerHTML = "";
+    window.google.accounts.id.renderButton(elements.googleSignInButton, {
+      theme: "outline",
+      size: "large",
+      shape: "pill",
+      text: "signin_with",
+      width: Math.min(320, elements.googleSignInButton.getBoundingClientRect().width || 320),
+    });
+    googleSignInInitialized = true;
+    state.authError = "";
+  } catch (error) {
+    state.authError = error.message;
+    render();
+  }
+}
+
+async function loadMe() {
+  if (isFileRuntime()) {
+    state.authStatus = "error";
+    state.authError = "Google 登录和收藏需要通过本地服务访问。";
+    render();
+    return;
+  }
+
+  state.authStatus = "loading";
+  try {
+    const response = await fetch("/api/me");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Me 返回 ${response.status}`);
+    state.currentUser = payload.user || null;
+    state.favorites = payload.favorites || [];
+    state.googleClientConfigured = Boolean(payload.googleClientConfigured);
+    state.authStatus = "ready";
+    state.authError = "";
+  } catch (error) {
+    state.currentUser = null;
+    state.favorites = [];
+    state.authStatus = "error";
+    state.authError = getFriendlySearchError(error);
+  } finally {
+    render();
+  }
+}
+
+async function handleGoogleCredential(response) {
+  if (!response?.credential) return;
+  state.authStatus = "loading";
+  state.authError = "";
+  render();
+
+  try {
+    const authResponse = await fetch("/api/auth/google", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credential: response.credential }),
+    });
+    const payload = await authResponse.json();
+    if (!authResponse.ok) throw new Error(payload.error || `Google 登录返回 ${authResponse.status}`);
+    state.currentUser = payload.user || null;
+    state.favorites = payload.favorites || [];
+    state.googleClientConfigured = Boolean(payload.googleClientConfigured);
+    state.authStatus = "ready";
+    state.authError = "";
+    googleSignInInitialized = false;
+  } catch (error) {
+    state.authStatus = "error";
+    state.authError = error.message;
+  } finally {
+    render();
+  }
+}
+
+async function logoutMe() {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch {
+    // The UI should still clear local user state if the network request fails.
+  }
+  state.currentUser = null;
+  state.favorites = [];
+  state.authStatus = "ready";
+  state.authError = "";
+  googleSignInInitialized = false;
+  render();
+}
+
+function getFavoriteKeyForPoi(poi) {
+  return normalizeText(poi?.placeId || poi?.id || `${poi?.type || "poi"} ${poi?.name || ""} ${poi?.city || ""}`);
+}
+
+function isFavoritePoi(poi) {
+  const key = getFavoriteKeyForPoi(poi);
+  return Boolean(key && state.favorites.some((favorite) => favorite.favoriteKey === key || getFavoriteKeyForPoi(favorite) === key));
+}
+
+function serializeFavoritePoi(poi) {
+  return {
+    id: poi.id,
+    placeId: poi.placeId || "",
+    type: poi.type,
+    name: poi.name,
+    city: poi.city,
+    area: poi.area,
+    category: poi.category,
+    description: poi.description,
+    price: poi.price,
+    photoUrl: poi.photoUrl,
+    ratings: poi.ratings || {},
+    tags: poi.tags || [],
+    lat: poi.lat,
+    lng: poi.lng,
+  };
+}
+
+async function toggleFavorite(poi) {
+  if (!poi) return;
+  if (!state.currentUser) {
+    state.activeTab = "me";
+    state.authError = "请先用 Google 登录后再收藏 POI。";
+    state.userSelectedPoi = false;
+    state.selectedId = null;
+    state.detailPageOpen = false;
+    replaceListHistoryState();
+    render();
+    requestAnimationFrame(initializeGoogleSignIn);
+    return;
+  }
+
+  const key = getFavoriteKeyForPoi(poi);
+  const saved = isFavoritePoi(poi);
+  try {
+    const response = await fetch(saved ? `/api/favorites?id=${encodeURIComponent(key)}` : "/api/favorites", {
+      method: saved ? "DELETE" : "POST",
+      headers: { "content-type": "application/json" },
+      body: saved ? undefined : JSON.stringify({ poi: serializeFavoritePoi(poi) }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `收藏返回 ${response.status}`);
+    state.favorites = payload.favorites || [];
+    state.authError = "";
+  } catch (error) {
+    state.authError = error.message;
+  } finally {
+    render();
+  }
+}
+
+function renderFavoriteCard(favorite) {
+  const fallback = `<span>${escapeHtml((favorite.name || "?").slice(0, 1))}</span>`;
+  const media = renderCachedImage(favorite.photoUrl, favorite.name, fallback);
+  const meta = getPoiMetaParts({
+    ...favorite,
+    ratings: favorite.ratings || {},
+    tags: favorite.tags || [],
+  }).map(escapeHtml).join(" · ");
+  const score = averageScore({
+    ...favorite,
+    ratings: favorite.ratings || {},
+  });
+
+  return `
+    <button type="button" class="me-favorite-card" data-favorite-id="${escapeHtml(favorite.favoriteKey || getFavoriteKeyForPoi(favorite))}">
+      <div class="me-favorite-media">${media}</div>
+      <span>
+        <strong>${escapeHtml(favorite.name)}</strong>
+        <small>${meta || escapeHtml(favorite.city || "Saved POI")}</small>
+      </span>
+      <em>${score || "N/A"}</em>
+    </button>
+  `;
+}
+
+function renderMeState() {
+  const active = state.activeTab === "me";
+  elements.homeView?.classList.toggle("is-me", active);
+  elements.meView.hidden = !active;
+  elements.contentGrid?.classList.toggle("is-me", active);
+  elements.mobileTabbar?.querySelectorAll("button[data-home-nav]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.homeNav === state.activeTab);
+  });
+
+  if (!active) return;
+
+  const signedIn = Boolean(state.currentUser);
+  if (elements.meSignedOut) elements.meSignedOut.hidden = signedIn;
+  if (elements.meProfile) elements.meProfile.hidden = !signedIn;
+  if (elements.meAuthStatus) {
+    const missingGoogleClientConfig = !getGoogleClientId() || !state.googleClientConfigured;
+    const statusMessage = state.authError || (missingGoogleClientConfig ? "请先配置 Google OAuth Client ID。" : "");
+    elements.meAuthStatus.textContent =
+      state.authStatus === "loading" ? "正在检查登录状态..." : signedIn ? "" : statusMessage || "使用 Google 账号登录后即可收藏 POI。";
+    elements.meAuthStatus.classList.toggle("is-error", Boolean(state.authError || missingGoogleClientConfig));
+  }
+  if (signedIn) {
+    if (elements.meAvatar) {
+      elements.meAvatar.src = state.currentUser.picture || "";
+      elements.meAvatar.hidden = !state.currentUser.picture;
+    }
+    if (elements.meName) elements.meName.textContent = state.currentUser.name || "Me";
+    if (elements.meEmail) elements.meEmail.textContent = state.currentUser.email || "";
+  }
+  if (elements.meFavoriteCount) {
+    elements.meFavoriteCount.textContent = String(state.favorites.length);
+  }
+  if (elements.meFavoritesList) {
+    elements.meFavoritesList.innerHTML = state.favorites.length
+      ? state.favorites.map(renderFavoriteCard).join("")
+      : `
+        <div class="me-empty-favorites">
+          <strong>还没有收藏</strong>
+          <span>在 POI 详情页点右上角的心形按钮，收藏会出现在这里。</span>
+        </div>
+      `;
+  }
+  requestAnimationFrame(initializeGoogleSignIn);
+}
+
 function scheduleExploreSearch() {
   clearTimeout(exploreSearchTimer);
   const query = elements.exploreSearchInput?.value.trim() || "";
@@ -3274,6 +3553,7 @@ function renderHome(pois) {
   renderExploreState();
   renderBuddyState();
   renderRouteState();
+  renderMeState();
 }
 
 function render() {
@@ -4506,6 +4786,26 @@ elements.routeReplanButton?.addEventListener("click", () => {
   render();
 });
 
+elements.meLogoutButton?.addEventListener("click", logoutMe);
+
+elements.meFavoritesList?.addEventListener("click", (event) => {
+  const card = event.target.closest("button[data-favorite-id]");
+  if (!card) return;
+  const favorite = state.favorites.find((item) => {
+    const key = card.dataset.favoriteId;
+    return item.favoriteKey === key || getFavoriteKeyForPoi(item) === key;
+  });
+  if (!favorite) return;
+  state.googlePois = [favorite, ...state.googlePois.filter((poi) => !isSamePoiReference(poi, favorite))];
+  state.activeTab = "discover";
+  state.query = favorite.name;
+  state.homeSearchStatus = "ready";
+  state.userSelectedPoi = true;
+  state.selectedId = favorite.id;
+  state.detailPageOpen = false;
+  selectPoi(favorite.id);
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.cityPickerOpen) {
     closeCityPicker();
@@ -4618,6 +4918,16 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
     return;
   }
 
+  if (button.dataset.homeNav === "me") {
+    setActiveHomeTab("me");
+    state.userSelectedPoi = false;
+    state.selectedId = null;
+    state.detailPageOpen = false;
+    replaceListHistoryState();
+    render();
+    return;
+  }
+
   setActiveHomeTab(button.dataset.homeNav || "discover");
   elements.searchInput.focus();
 });
@@ -4626,6 +4936,13 @@ elements.detailView.addEventListener("click", (event) => {
   const backButton = event.target.closest("button[data-detail-nav='back']");
   if (backButton) {
     closeDetailPage();
+    return;
+  }
+
+  const favoriteButton = event.target.closest("button[data-favorite-action='toggle']");
+  if (favoriteButton) {
+    const poi = findPoiById(favoriteButton.dataset.poiId);
+    toggleFavorite(poi);
     return;
   }
 
@@ -4660,4 +4977,5 @@ window.addEventListener("resize", applyNavigationMode);
 
 initializeNavigationHistory();
 render();
+loadMe();
 loadGooglePlaces();

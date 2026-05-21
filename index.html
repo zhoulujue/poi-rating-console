@@ -223,6 +223,39 @@
               </div>
             </section>
 
+            <section class="me-view" id="meView" hidden aria-label="Profile">
+              <div class="me-shell">
+                <section class="me-card me-signed-out" id="meSignedOut">
+                  <div class="me-avatar-placeholder" aria-hidden="true">○</div>
+                  <p class="eyebrow">Me</p>
+                  <h2>Sign in to save places.</h2>
+                  <p>Use your Google account so favorites stay tied to you.</p>
+                  <div class="google-signin-button" id="googleSignInButton"></div>
+                  <p class="me-status" id="meAuthStatus"></p>
+                </section>
+
+                <section class="me-card me-profile" id="meProfile" hidden>
+                  <div class="me-profile-head">
+                    <img id="meAvatar" alt="" />
+                    <div>
+                      <p class="eyebrow">Profile</p>
+                      <h2 id="meName">Me</h2>
+                      <p id="meEmail"></p>
+                    </div>
+                  </div>
+                  <button type="button" class="me-logout-button" id="meLogoutButton">Sign out</button>
+                </section>
+
+                <section class="me-card me-favorites-card">
+                  <div class="me-section-heading">
+                    <h3>Saved POIs</h3>
+                    <span id="meFavoriteCount">0</span>
+                  </div>
+                  <div class="me-favorites-list" id="meFavoritesList"></div>
+                </section>
+              </div>
+            </section>
+
           </section>
 
           <section class="detail-panel" aria-live="polite">

@@ -23,6 +23,8 @@ const {
   bookingAccommodationIds = {},
   yelpApiKey,
   yelpFusionAiApiKey,
+  googleClientId,
+  sessionSecret,
   geminiApiKey,
   geminiModel = "gemini-2.5-flash",
   braveApiKey,
@@ -35,6 +37,7 @@ const ROOT = __dirname;
 const CACHE_DIR = process.env.POI_CACHE_DIR || path.join(ROOT, ".data");
 const CACHE_FILE = process.env.POI_CACHE_FILE || path.join(CACHE_DIR, "poi-cache.json");
 const CACHE_ENTRIES_DIR = process.env.POI_CACHE_ENTRIES_DIR || path.join(CACHE_DIR, "entries");
+const FAVORITES_DIR = process.env.POI_FAVORITES_DIR || path.join(CACHE_DIR, "favorites");
 const MICHELIN_DATA_FILE = process.env.MICHELIN_DATA_FILE || path.join(ROOT, "data", "michelin_my_maps.csv");
 const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 10000000);
 const CACHE_MEMORY_MAX_ENTRIES = Number(process.env.POI_CACHE_MEMORY_MAX_ENTRIES || 5000);
@@ -42,6 +45,16 @@ const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_L
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const AI_SEARCH_MODEL = process.env.POI_AI_SEARCH_MODEL || "gemini-2.5-flash";
 const ROUTE_PLAN_MODEL = process.env.POI_ROUTE_PLAN_MODEL || "gemini-2.5-flash";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || googleClientId || "";
+const AUTH_COOKIE_NAME = "poi_session";
+const SESSION_MAX_AGE_SECONDS = Number(process.env.POI_SESSION_MAX_AGE_SECONDS || 60 * 60 * 24 * 30);
+const SESSION_SECRET =
+  process.env.POI_SESSION_SECRET ||
+  sessionSecret ||
+  crypto
+    .createHash("sha256")
+    .update([geminiApiKey, tripAdvisorApiKey, braveApiKey, tavilyApiKey, ROOT].filter(Boolean).join("|") || "poi-rating-console-dev")
+    .digest("hex");
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
   : "https://demandapi.booking.com/3.1";
@@ -166,6 +179,190 @@ function writeCacheEntry(key, payload, meta = {}) {
   rememberCacheEntry(key, entry);
   persistCacheEntry(key, entry);
   return entry;
+}
+
+function base64UrlEncode(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function base64UrlDecode(value) {
+  return Buffer.from(value, "base64url").toString("utf8");
+}
+
+function signSessionPayload(payload) {
+  return crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+}
+
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${value}`];
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
+  if (options.path) parts.push(`Path=${options.path}`);
+  if (options.httpOnly) parts.push("HttpOnly");
+  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options.secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+function parseCookies(req) {
+  return String(req.headers.cookie || "")
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, part) => {
+      const separator = part.indexOf("=");
+      if (separator === -1) return cookies;
+      const name = part.slice(0, separator);
+      const value = part.slice(separator + 1);
+      cookies[name] = decodeURIComponent(value);
+      return cookies;
+    }, {});
+}
+
+function getRequestProtocol(req) {
+  return req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http");
+}
+
+function createSessionCookie(req, user) {
+  const expiresAt = Date.now() + SESSION_MAX_AGE_SECONDS * 1000;
+  const payload = base64UrlEncode(JSON.stringify({ ...user, expiresAt }));
+  const signature = signSessionPayload(payload);
+  return serializeCookie(AUTH_COOKIE_NAME, `${payload}.${signature}`, {
+    maxAge: SESSION_MAX_AGE_SECONDS,
+    path: "/",
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: getRequestProtocol(req) === "https",
+  });
+}
+
+function createClearSessionCookie(req) {
+  return serializeCookie(AUTH_COOKIE_NAME, "", {
+    maxAge: 0,
+    path: "/",
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: getRequestProtocol(req) === "https",
+  });
+}
+
+function getSessionUser(req) {
+  const token = parseCookies(req)[AUTH_COOKIE_NAME];
+  if (!token) return null;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+
+  const expected = signSessionPayload(payload);
+  const expectedBuffer = Buffer.from(expected);
+  const signatureBuffer = Buffer.from(signature);
+  if (expectedBuffer.length !== signatureBuffer.length || !crypto.timingSafeEqual(expectedBuffer, signatureBuffer)) {
+    return null;
+  }
+
+  try {
+    const user = JSON.parse(base64UrlDecode(payload));
+    if (!user.sub || Number(user.expiresAt) < Date.now()) return null;
+    return {
+      sub: user.sub,
+      email: user.email || "",
+      name: user.name || user.email || "Google User",
+      picture: user.picture || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getUserFavoritesFile(user) {
+  const userKey = crypto.createHash("sha256").update(user.sub).digest("hex");
+  return path.join(FAVORITES_DIR, `${userKey}.json`);
+}
+
+function loadUserFavorites(user) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getUserFavoritesFile(user), "utf8"));
+    return Array.isArray(parsed.favorites) ? parsed.favorites : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUserFavorites(user, favorites) {
+  fs.mkdirSync(FAVORITES_DIR, { recursive: true });
+  const file = getUserFavoritesFile(user);
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify({ favorites }, null, 2));
+  fs.renameSync(tmpFile, file);
+}
+
+function getFavoriteKey(poi) {
+  return normalizeLookupKey(poi.placeId || poi.id || `${poi.type}-${poi.name}-${poi.city}`);
+}
+
+function sanitizeFavoritePoi(value) {
+  const poi = value && typeof value === "object" ? value : {};
+  const type = poi.type === "hotel" ? "hotel" : "restaurant";
+  const favorite = {
+    id: String(poi.id || poi.placeId || `${type}-${poi.name || "poi"}`),
+    placeId: String(poi.placeId || ""),
+    type,
+    name: String(poi.name || "Untitled POI").slice(0, 160),
+    city: String(poi.city || "").slice(0, 120),
+    area: String(poi.area || "").slice(0, 160),
+    category: String(poi.category || "").slice(0, 160),
+    description: String(poi.description || "").slice(0, 600),
+    price: String(poi.price || "").slice(0, 120),
+    photoUrl: String(poi.photoUrl || "").slice(0, 1000),
+    ratings: poi.ratings && typeof poi.ratings === "object" ? poi.ratings : {},
+    tags: toArray(poi.tags).map(String).slice(0, 8),
+    lat: Number(poi.lat),
+    lng: Number(poi.lng),
+    savedAt: new Date().toISOString(),
+  };
+  favorite.favoriteKey = getFavoriteKey(favorite);
+  return favorite;
+}
+
+async function verifyGoogleCredential(credential) {
+  if (!GOOGLE_CLIENT_ID) {
+    const error = new Error("Google OAuth Client ID is not configured.");
+    error.status = 500;
+    throw error;
+  }
+  if (!credential || typeof credential !== "string") {
+    const error = new Error("Missing Google credential.");
+    error.status = 400;
+    throw error;
+  }
+
+  const response = await fetchWithTimeout(
+    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`,
+    {},
+    10000,
+    "Google token verification",
+  );
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error_description || payload.error || "Google credential verification failed.");
+    error.status = 401;
+    throw error;
+  }
+  if (payload.aud !== GOOGLE_CLIENT_ID) {
+    const error = new Error("Google credential audience does not match this app.");
+    error.status = 401;
+    throw error;
+  }
+  if (payload.email_verified !== "true" && payload.email_verified !== true) {
+    const error = new Error("Google email is not verified.");
+    error.status = 401;
+    throw error;
+  }
+
+  return {
+    sub: payload.sub,
+    email: payload.email || "",
+    name: payload.name || payload.email || "Google User",
+    picture: payload.picture || "",
+  };
 }
 
 function getInflightCacheWrite(key) {
@@ -2236,6 +2433,108 @@ The previous request timed out or the runtime location is unsupported. Return a 
   }
 }
 
+function requireSessionUser(req, res) {
+  const user = getSessionUser(req);
+  if (!user) {
+    sendJson(res, 401, { error: "Not signed in" });
+    return null;
+  }
+  return user;
+}
+
+function handleMe(req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  const user = getSessionUser(req);
+  sendJson(res, 200, {
+    user,
+    favorites: user ? loadUserFavorites(user) : [],
+    googleClientConfigured: Boolean(GOOGLE_CLIENT_ID),
+  });
+}
+
+async function handleGoogleAuth(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(req, 200000);
+    const user = await verifyGoogleCredential(payload.credential);
+    res.setHeader("Set-Cookie", createSessionCookie(req, user));
+    sendJson(res, 200, {
+      user,
+      favorites: loadUserFavorites(user),
+      googleClientConfigured: Boolean(GOOGLE_CLIENT_ID),
+    });
+  } catch (error) {
+    sendJson(res, error.status || 500, { error: error.message || "Google sign-in failed" });
+  }
+}
+
+function handleLogout(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  res.setHeader("Set-Cookie", createClearSessionCookie(req));
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleFavorites(req, res, url) {
+  const user = requireSessionUser(req, res);
+  if (!user) return;
+
+  if (req.method === "GET") {
+    sendJson(res, 200, { favorites: loadUserFavorites(user) });
+    return;
+  }
+
+  if (req.method === "POST") {
+    try {
+      const payload = await readJsonBody(req, 250000);
+      const favorite = sanitizeFavoritePoi(payload.poi);
+      const favorites = loadUserFavorites(user).filter((item) => item.favoriteKey !== favorite.favoriteKey);
+      const nextFavorites = [favorite, ...favorites].slice(0, 500);
+      saveUserFavorites(user, nextFavorites);
+      sendJson(res, 200, { favorite, favorites: nextFavorites });
+    } catch (error) {
+      sendJson(res, error.message === "Invalid JSON" ? 400 : 413, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === "DELETE") {
+    let id = url.searchParams.get("id") || "";
+    if (!id) {
+      try {
+        const payload = await readJsonBody(req, 50000);
+        id = payload.id || payload.favoriteKey || "";
+      } catch {
+        id = "";
+      }
+    }
+    const key = normalizeLookupKey(id);
+    if (!key) {
+      sendJson(res, 400, { error: "Missing favorite id" });
+      return;
+    }
+    const nextFavorites = loadUserFavorites(user).filter((item) => {
+      return item.favoriteKey !== key && normalizeLookupKey(item.id) !== key && normalizeLookupKey(item.placeId) !== key;
+    });
+    saveUserFavorites(user, nextFavorites);
+    sendJson(res, 200, { favorites: nextFavorites });
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed" });
+}
+
 function getBravePlatformQuery(platform, query, type, city) {
   const locationHint = city ? ` ${city}` : "";
   const base = `"${query}"${locationHint}`;
@@ -3071,6 +3370,26 @@ function serveStatic(req, res, url) {
 
 function handleRequest(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (url.pathname === "/api/me") {
+    handleMe(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/auth/google") {
+    handleGoogleAuth(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/logout") {
+    handleLogout(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/favorites") {
+    handleFavorites(req, res, url);
+    return;
+  }
 
   if (url.pathname === "/api/tripadvisor/search") {
     if (maybeServeCachedProvider(res, url, "tripadvisor")) return;

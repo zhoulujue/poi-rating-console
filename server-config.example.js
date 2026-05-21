@@ -6,6 +6,8 @@ module.exports = {
   bookingAccommodationIds: {},
   yelpApiKey: "",
   yelpFusionAiApiKey: "",
+  googleClientId: "",
+  sessionSecret: "",
   geminiApiKey: "",
   geminiModel: "gemini-2.5-flash",
   braveApiKey: "",
