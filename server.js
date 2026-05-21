@@ -3653,7 +3653,7 @@ function listenWithPortFallback(port, attemptsLeft = MAX_PORT_ATTEMPTS) {
   });
 
   server.listen(port, () => {
-    console.log(`POI ratings app running at http://127.0.0.1:${port}`);
+    console.log(`GoPal running at http://127.0.0.1:${port}`);
   });
 }
 
