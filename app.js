@@ -254,6 +254,8 @@ const state = {
   authError: "",
   currentUser: null,
   favorites: [],
+  favoriteRouteSelection: [],
+  favoriteRouteSelectionError: "",
   googleClientConfigured: false,
   aiIntent: null,
   aiCandidates: [],
@@ -380,6 +382,9 @@ const elements = {
   meEmail: document.querySelector("#meEmail"),
   meLogoutButton: document.querySelector("#meLogoutButton"),
   meFavoriteCount: document.querySelector("#meFavoriteCount"),
+  meRouteTools: document.querySelector("#meRouteTools"),
+  meRouteSelectionStatus: document.querySelector("#meRouteSelectionStatus"),
+  meRouteSelectedButton: document.querySelector("#meRouteSelectedButton"),
   meFavoritesList: document.querySelector("#meFavoritesList"),
   nearYouCity: document.querySelector("#nearYouCity"),
   nearYouRail: document.querySelector("#nearYouRail"),
@@ -2941,12 +2946,15 @@ function invalidateRoutePlan() {
   clearRouteMapOverlays();
 }
 
+function getRouteStopKey(poi) {
+  return poi?.placeId || poi?.id || `${poi?.type || "poi"}:${normalizeText(poi?.name)}:${normalizeText(poi?.city)}`;
+}
+
 function addRouteStop(poi) {
   if (!poi || state.routeStops.length >= 10) return;
-  const key = poi.placeId || poi.id || `${poi.type}:${normalizeText(poi.name)}:${normalizeText(poi.city)}`;
+  const key = getRouteStopKey(poi);
   const exists = state.routeStops.some((stop) => {
-    const stopKey = stop.placeId || stop.id || `${stop.type}:${normalizeText(stop.name)}:${normalizeText(stop.city)}`;
-    return stopKey === key;
+    return getRouteStopKey(stop) === key;
   });
   if (exists) return;
 
@@ -3369,6 +3377,7 @@ async function loadMe() {
   } catch (error) {
     state.currentUser = null;
     state.favorites = [];
+    state.favoriteRouteSelection = [];
     state.authStatus = "error";
     state.authError = getFriendlySearchError(error);
   } finally {
@@ -3412,6 +3421,8 @@ async function logoutMe() {
   }
   state.currentUser = null;
   state.favorites = [];
+  state.favoriteRouteSelection = [];
+  state.favoriteRouteSelectionError = "";
   state.authStatus = "ready";
   state.authError = "";
   googleSignInInitialized = false;
@@ -3425,6 +3436,41 @@ function getFavoriteKeyForPoi(poi) {
 function isFavoritePoi(poi) {
   const key = getFavoriteKeyForPoi(poi);
   return Boolean(key && state.favorites.some((favorite) => favorite.favoriteKey === key || getFavoriteKeyForPoi(favorite) === key));
+}
+
+function getFavoriteRouteKey(favorite) {
+  return favorite?.favoriteKey || getFavoriteKeyForPoi(favorite);
+}
+
+function findFavoriteByRouteKey(key) {
+  return state.favorites.find((favorite) => getFavoriteRouteKey(favorite) === key);
+}
+
+function pruneFavoriteRouteSelection() {
+  if (!state.favoriteRouteSelection.length) return;
+  const validKeys = new Set(state.favorites.map(getFavoriteRouteKey));
+  state.favoriteRouteSelection = state.favoriteRouteSelection.filter((key) => validKeys.has(key));
+}
+
+function getSelectedRouteFavorites() {
+  pruneFavoriteRouteSelection();
+  return state.favoriteRouteSelection
+    .map((key) => findFavoriteByRouteKey(key))
+    .filter(Boolean);
+}
+
+function normalizeFavoriteForRoute(favorite) {
+  const key = getFavoriteRouteKey(favorite);
+  return {
+    ...favorite,
+    id: favorite.id || favorite.placeId || `favorite-${key}`,
+    placeId: favorite.placeId || "",
+    type: favorite.type || "restaurant",
+    city: favorite.city || state.homeCity || "",
+    area: favorite.area || state.homeDistrict || "",
+    ratings: favorite.ratings || {},
+    tags: favorite.tags || [],
+  };
 }
 
 function serializeFavoritePoi(poi) {
@@ -3444,6 +3490,83 @@ function serializeFavoritePoi(poi) {
     lat: poi.lat,
     lng: poi.lng,
   };
+}
+
+function toggleFavoriteRouteSelection(key) {
+  if (!key) return;
+  const selected = state.favoriteRouteSelection.includes(key);
+  if (selected) {
+    state.favoriteRouteSelection = state.favoriteRouteSelection.filter((item) => item !== key);
+    state.favoriteRouteSelectionError = "";
+    render();
+    return;
+  }
+
+  if (state.favoriteRouteSelection.length >= 10) {
+    state.favoriteRouteSelectionError = "最多选择 10 个 POI 生成路线。";
+    render();
+    return;
+  }
+
+  state.favoriteRouteSelection = [...state.favoriteRouteSelection, key];
+  state.favoriteRouteSelectionError = "";
+  render();
+}
+
+function openFavoriteFromMe(favorite) {
+  if (!favorite) return;
+  const prepared = normalizeFavoriteForRoute(favorite);
+  state.googlePois = [prepared, ...state.googlePois.filter((poi) => !isSamePoiReference(poi, prepared))];
+  state.activeTab = "discover";
+  state.query = prepared.name;
+  state.homeSearchStatus = "ready";
+  state.userSelectedPoi = true;
+  state.selectedId = prepared.id;
+  state.detailPageOpen = false;
+  selectPoi(prepared.id);
+}
+
+function routeSelectedFavorites() {
+  const selectedFavorites = getSelectedRouteFavorites();
+  if (selectedFavorites.length < 2) {
+    state.favoriteRouteSelectionError = "请选择至少 2 个 Saved POIs 来生成路线。";
+    render();
+    return;
+  }
+
+  const seen = new Set();
+  const stops = [];
+  selectedFavorites.map(normalizeFavoriteForRoute).forEach((favorite) => {
+    const key = getRouteStopKey(favorite);
+    if (!key || seen.has(key) || stops.length >= 10) return;
+    seen.add(key);
+    stops.push(favorite);
+  });
+
+  if (stops.length < 2) {
+    state.favoriteRouteSelectionError = "选中的 POI 去重后不足 2 个。";
+    render();
+    return;
+  }
+
+  state.routeStops = stops;
+  state.routeSearchOpen = false;
+  state.routeSearchQuery = "";
+  state.routeSearchStatus = "idle";
+  state.routeSearchError = "";
+  state.routePredictions = [];
+  state.favoriteRouteSelectionError = "";
+  invalidateRoutePlan();
+  setActiveHomeTab("route");
+  state.userSelectedPoi = false;
+  state.selectedId = null;
+  state.detailPageOpen = false;
+  replaceListHistoryState();
+  render();
+  requestAnimationFrame(() => {
+    elements.routeView?.scrollTo?.({ top: 0, behavior: "smooth" });
+    prepareRouteMap();
+  });
 }
 
 async function toggleFavorite(poi) {
@@ -3480,6 +3603,8 @@ async function toggleFavorite(poi) {
 }
 
 function renderFavoriteCard(favorite) {
+  const key = getFavoriteRouteKey(favorite);
+  const selected = state.favoriteRouteSelection.includes(key);
   const fallback = `<span>${escapeHtml((favorite.name || "?").slice(0, 1))}</span>`;
   const media = renderCachedImage(favorite.photoUrl, favorite.name, fallback);
   const meta = getPoiMetaParts({
@@ -3489,13 +3614,24 @@ function renderFavoriteCard(favorite) {
   }).map(escapeHtml).join(" · ");
 
   return `
-    <button type="button" class="me-favorite-card" data-favorite-id="${escapeHtml(favorite.favoriteKey || getFavoriteKeyForPoi(favorite))}">
-      <div class="me-favorite-media">${media}</div>
-      <span>
-        <strong>${escapeHtml(favorite.name)}</strong>
-        <small>${meta || escapeHtml(favorite.city || "Saved POI")}</small>
-      </span>
-    </button>
+    <article class="me-favorite-card ${selected ? "is-selected" : ""}">
+      <button
+        type="button"
+        class="me-favorite-select ${selected ? "is-selected" : ""}"
+        data-favorite-route-toggle="${escapeHtml(key)}"
+        aria-pressed="${selected}"
+        aria-label="${selected ? "取消选择" : "选择"} ${escapeHtml(favorite.name)} 用于路线"
+      >
+        <span aria-hidden="true">${selected ? "✓" : ""}</span>
+      </button>
+      <button type="button" class="me-favorite-open" data-favorite-id="${escapeHtml(key)}">
+        <div class="me-favorite-media">${media}</div>
+        <span>
+          <strong>${escapeHtml(favorite.name)}</strong>
+          <small>${meta || escapeHtml(favorite.city || "Saved POI")}</small>
+        </span>
+      </button>
+    </article>
   `;
 }
 
@@ -3530,6 +3666,24 @@ function renderMeState() {
   }
   if (elements.meFavoriteCount) {
     elements.meFavoriteCount.textContent = String(state.favorites.length);
+  }
+  pruneFavoriteRouteSelection();
+  const selectedRouteFavorites = getSelectedRouteFavorites();
+  const selectedCount = selectedRouteFavorites.length;
+  if (elements.meRouteTools) {
+    elements.meRouteTools.hidden = !signedIn || !state.favorites.length;
+  }
+  if (elements.meRouteSelectionStatus) {
+    elements.meRouteSelectionStatus.textContent =
+      state.favoriteRouteSelectionError ||
+      (selectedCount
+        ? `${selectedCount} selected. ${selectedCount >= 2 ? "Ready to send to Route." : "Pick one more to plan."}`
+        : "Select 2-10 saved POIs to plan a route.");
+    elements.meRouteSelectionStatus.classList.toggle("is-error", Boolean(state.favoriteRouteSelectionError));
+  }
+  if (elements.meRouteSelectedButton) {
+    elements.meRouteSelectedButton.disabled = selectedCount < 2;
+    elements.meRouteSelectedButton.textContent = selectedCount >= 2 ? `Route selected (${selectedCount}) →` : "Route selected →";
   }
   if (elements.meFavoritesList) {
     elements.meFavoritesList.innerHTML = state.favorites.length
@@ -5151,22 +5305,18 @@ elements.routeReplanButton?.addEventListener("click", () => {
 
 elements.meLogoutButton?.addEventListener("click", logoutMe);
 
+elements.meRouteSelectedButton?.addEventListener("click", routeSelectedFavorites);
+
 elements.meFavoritesList?.addEventListener("click", (event) => {
+  const toggle = event.target.closest("button[data-favorite-route-toggle]");
+  if (toggle) {
+    toggleFavoriteRouteSelection(toggle.dataset.favoriteRouteToggle);
+    return;
+  }
+
   const card = event.target.closest("button[data-favorite-id]");
   if (!card) return;
-  const favorite = state.favorites.find((item) => {
-    const key = card.dataset.favoriteId;
-    return item.favoriteKey === key || getFavoriteKeyForPoi(item) === key;
-  });
-  if (!favorite) return;
-  state.googlePois = [favorite, ...state.googlePois.filter((poi) => !isSamePoiReference(poi, favorite))];
-  state.activeTab = "discover";
-  state.query = favorite.name;
-  state.homeSearchStatus = "ready";
-  state.userSelectedPoi = true;
-  state.selectedId = favorite.id;
-  state.detailPageOpen = false;
-  selectPoi(favorite.id);
+  openFavoriteFromMe(findFavoriteByRouteKey(card.dataset.favoriteId));
 });
 
 window.addEventListener("keydown", (event) => {

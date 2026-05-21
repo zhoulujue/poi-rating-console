@@ -1226,6 +1226,48 @@ h1 {
   gap: 10px;
 }
 
+.me-route-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #e7eee8;
+  border-radius: 16px;
+  background: #f7fbf7;
+}
+
+.me-route-tools p {
+  margin: 0;
+  color: #63716a;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.me-route-tools p.is-error {
+  color: #8a4b00;
+}
+
+#meRouteSelectedButton {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  color: #fffdfa;
+  background: #1d6f5f;
+  font-size: 13px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+#meRouteSelectedButton:disabled {
+  color: #9a948b;
+  background: #ebe7df;
+  cursor: not-allowed;
+}
+
 .me-empty-favorites {
   display: grid;
   gap: 6px;
@@ -1252,9 +1294,9 @@ h1 {
 
 .me-favorite-card {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   width: 100%;
   min-height: 92px;
   padding: 10px;
@@ -1266,9 +1308,51 @@ h1 {
 }
 
 .me-favorite-card:hover,
-.me-favorite-card:focus-visible {
+.me-favorite-card:focus-within {
   border-color: rgba(29, 111, 95, 0.25);
   background: #f8fbf7;
+}
+
+.me-favorite-card.is-selected {
+  border-color: rgba(29, 111, 95, 0.42);
+  background: #f3faf6;
+}
+
+.me-favorite-select {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #d9e3dc;
+  border-radius: 999px;
+  color: #fffdfa;
+  background: #fffdfa;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.me-favorite-select.is-selected {
+  border-color: #1d6f5f;
+  background: #1d6f5f;
+}
+
+.me-favorite-select:focus-visible,
+.me-favorite-open:focus-visible {
+  outline: 3px solid rgba(29, 111, 95, 0.16);
+  outline-offset: 3px;
+}
+
+.me-favorite-open {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
 }
 
 .me-favorite-media {
@@ -1294,6 +1378,7 @@ h1 {
 .me-favorite-card strong,
 .me-favorite-card small {
   display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3024,8 +3109,28 @@ h1 {
     justify-self: start;
   }
 
+  .me-route-tools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  #meRouteSelectedButton {
+    width: 100%;
+  }
+
   .me-favorite-card {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .me-favorite-select {
+    width: 28px;
+    height: 28px;
+  }
+
+  .me-favorite-open {
     grid-template-columns: 64px minmax(0, 1fr);
+    gap: 12px;
   }
 
   .me-favorite-media {
