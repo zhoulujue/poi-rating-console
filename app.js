@@ -717,12 +717,17 @@ function getCurrentPathForHistory() {
   return `${window.location.pathname}${window.location.search}`;
 }
 
+function isKnownHomeTab(tab) {
+  return ["discover", "explore", "buddy", "route", "me"].includes(tab);
+}
+
 function replaceListHistoryState() {
   if (!window.history?.replaceState) return;
   window.history.replaceState(
     {
       poiApp: true,
       view: "list",
+      activeTab: isKnownHomeTab(state.activeTab) ? state.activeTab : "discover",
       listScrollY: state.listScrollY,
     },
     "",
@@ -763,6 +768,7 @@ function openDetailPageForCompact(id) {
       {
         poiApp: true,
         view: "detail",
+        activeTab: isKnownHomeTab(state.activeTab) ? state.activeTab : "discover",
         selectedId: id,
         listScrollY: state.listScrollY,
       },
@@ -815,6 +821,7 @@ function handleNavigationPop(event) {
   const nextState = event.state;
 
   if (nextState?.poiApp && nextState.view === "detail" && nextState.selectedId) {
+    if (isKnownHomeTab(nextState.activeTab)) state.activeTab = nextState.activeTab;
     state.selectedId = nextState.selectedId;
     state.userSelectedPoi = true;
     state.detailPageOpen = true;
@@ -825,6 +832,9 @@ function handleNavigationPop(event) {
   }
 
   state.detailPageOpen = false;
+  if (nextState?.poiApp && isKnownHomeTab(nextState.activeTab)) {
+    state.activeTab = nextState.activeTab;
+  }
   if (nextState?.poiApp && Number.isFinite(nextState.listScrollY)) {
     state.listScrollY = nextState.listScrollY;
   }
@@ -3517,9 +3527,6 @@ function openFavoriteFromMe(favorite) {
   if (!favorite) return;
   const prepared = normalizeFavoriteForRoute(favorite);
   state.googlePois = [prepared, ...state.googlePois.filter((poi) => !isSamePoiReference(poi, prepared))];
-  state.activeTab = "discover";
-  state.query = prepared.name;
-  state.homeSearchStatus = "ready";
   state.userSelectedPoi = true;
   state.selectedId = prepared.id;
   state.detailPageOpen = false;
