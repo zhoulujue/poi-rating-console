@@ -326,6 +326,7 @@ h1 {
 
 .home-search-field input {
   width: 100%;
+  min-width: 0;
   min-height: 58px;
   border: 0;
   padding: 0;
@@ -334,6 +335,7 @@ h1 {
   outline: none;
   font-size: 19px;
   font-weight: 760;
+  text-overflow: ellipsis;
 }
 
 .home-search-field:focus-within,
@@ -2700,9 +2702,21 @@ h1 {
   }
 
   .home-search-field {
+    grid-template-columns: 34px minmax(0, 1fr) 48px;
+    gap: 6px;
     min-height: 66px;
-    padding-left: 18px;
+    padding: 0 10px 0 12px;
     border-radius: 24px;
+  }
+
+  .home-search-field .search-glyph {
+    width: 34px;
+    height: 34px;
+  }
+
+  .home-search-field input {
+    font-size: 15px;
+    font-weight: 760;
   }
 
   .home-panel {
