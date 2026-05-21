@@ -26,7 +26,6 @@ const {
   googleClientId,
   sessionSecret,
   geminiApiKey,
-  geminiModel = "gemini-2.5-flash",
   braveApiKey,
   tavilyApiKey,
 } = loadLocalConfig();
@@ -43,9 +42,30 @@ const CACHE_MAX_ENTRIES = Number(process.env.POI_CACHE_MAX_ENTRIES || 10000000);
 const CACHE_MEMORY_MAX_ENTRIES = Number(process.env.POI_CACHE_MEMORY_MAX_ENTRIES || 5000);
 const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_LIMIT_BYTES || 50 * 1024 * 1024);
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
-const AI_SEARCH_MODEL = process.env.POI_AI_SEARCH_MODEL || "gemini-2.5-flash";
-const ROUTE_PLAN_MODEL = process.env.POI_ROUTE_PLAN_MODEL || "gemini-2.5-flash";
-const COMPANION_MODEL = process.env.POI_COMPANION_MODEL || "gemini-2.5-flash";
+const GEMINI_FAST_MODEL = "gemini-2.5-flash";
+const AI_SEARCH_MODEL = GEMINI_FAST_MODEL;
+const ROUTE_PLAN_MODEL = GEMINI_FAST_MODEL;
+const COMPANION_MODEL = GEMINI_FAST_MODEL;
+const GEMINI_BASE_GENERATION_CONFIG = Object.freeze({
+  temperature: 0.2,
+  topP: 0.8,
+  thinkingConfig: {
+    thinkingBudget: 0,
+  },
+});
+const GEMINI_TASK_OPTIONS = Object.freeze({
+  knowBefore: { timeoutMs: 20000, generationConfig: { maxOutputTokens: 3600, responseMimeType: "application/json", temperature: 0.25 } },
+  aiSearchGrounded: { timeoutMs: 22000, generationConfig: { maxOutputTokens: 1800 } },
+  aiSearchFallback: { timeoutMs: 12000, generationConfig: { maxOutputTokens: 1400, responseMimeType: "application/json" } },
+  routePlan: { timeoutMs: 15000, generationConfig: { maxOutputTokens: 1200, responseMimeType: "application/json" } },
+  routePlanFallback: { timeoutMs: 10000, generationConfig: { maxOutputTokens: 1100, responseMimeType: "application/json" } },
+  companion: { timeoutMs: 14000, generationConfig: { maxOutputTokens: 1400, responseMimeType: "application/json" } },
+  companionFallback: { timeoutMs: 9000, generationConfig: { maxOutputTokens: 1200, responseMimeType: "application/json" } },
+  ratingGrounded: { timeoutMs: 24000, generationConfig: { maxOutputTokens: 1000 } },
+  ratingFallback: { timeoutMs: 10000, generationConfig: { maxOutputTokens: 800, responseMimeType: "application/json" } },
+});
+let geminiThinkingConfigEnabled = true;
+let geminiJsonModeEnabled = true;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || googleClientId || "";
 const AUTH_COOKIE_NAME = "poi_session";
 const SESSION_MAX_AGE_SECONDS = Number(process.env.POI_SESSION_MAX_AGE_SECONDS || 60 * 60 * 24 * 30);
@@ -83,6 +103,23 @@ const HOTEL_INSIGHT_DIMENSIONS = [
   "品牌与信任感",
   "场景匹配",
 ];
+const KNOW_BEFORE_PROMPT_VERSION = "insight-v2";
+
+function getGeminiTaskOptions(task, overrides = {}) {
+  const defaults = GEMINI_TASK_OPTIONS[task] || {};
+
+  return {
+    ...defaults,
+    ...overrides,
+    modelName: GEMINI_FAST_MODEL,
+    timeoutMs: overrides.timeoutMs ?? defaults.timeoutMs ?? 18000,
+    generationConfig: {
+      ...GEMINI_BASE_GENERATION_CONFIG,
+      ...(defaults.generationConfig || {}),
+      ...(overrides.generationConfig || {}),
+    },
+  };
+}
 
 function sortDeep(value) {
   if (Array.isArray(value)) return value.map(sortDeep);
@@ -465,22 +502,9 @@ function getKnowBeforeCacheIdentity(payload) {
 function getKnowBeforeCacheKey(payload) {
   return makeCacheKey({
     kind: "know-before-you-go",
+    version: KNOW_BEFORE_PROMPT_VERSION,
     identity: getKnowBeforeCacheIdentity(payload),
   });
-}
-
-function getLegacyKnowBeforePayload(payload) {
-  if (!payload || typeof payload !== "object") return payload;
-  const legacyPayload = { ...payload };
-  delete legacyPayload.cacheIdentity;
-
-  if (legacyPayload.poi && typeof legacyPayload.poi === "object") {
-    legacyPayload.poi = { ...legacyPayload.poi };
-    delete legacyPayload.poi.id;
-    delete legacyPayload.poi.cacheIdentity;
-  }
-
-  return legacyPayload;
 }
 
 function getRequiredPlatformsForType(type) {
@@ -1503,6 +1527,92 @@ function formatKnowBeforeRating(source, rating) {
   return `${source} ${value}，${reviews}`;
 }
 
+function compactRatingMap(ratings = {}) {
+  return Object.fromEntries(
+    Object.entries(ratings || {})
+      .filter(([, rating]) => rating && typeof rating === "object")
+      .map(([source, rating]) => [
+        source,
+        {
+          score: rating.score,
+          max: rating.max,
+          label: rating.label,
+          reviews: rating.reviews,
+          updated: rating.updated,
+          source: rating.source,
+        },
+      ]),
+  );
+}
+
+function compactPreviewList(list, limit = 2) {
+  return toArray(list)
+    .slice(0, limit)
+    .map((item) => {
+      if (typeof item === "string") return normalizeAiSearchText(item).slice(0, 300);
+      if (!item || typeof item !== "object") return null;
+
+      return {
+        title: normalizeAiSearchText(item.title || item.name).slice(0, 140),
+        text: normalizeAiSearchText(item.text || item.caption || item.description).slice(0, 360),
+        rating: item.rating,
+      };
+    })
+    .filter(Boolean);
+}
+
+function compactKnowBeforeSummaryForPrompt(summary) {
+  if (!summary || typeof summary !== "object") return null;
+
+  return {
+    headline: normalizeAiSearchText(summary.headline).slice(0, 180),
+    overview: normalizeAiSearchText(summary.overview).slice(0, 700),
+    uniqueTraits: toArray(summary.uniqueTraits).map(normalizeAiSearchText).filter(Boolean).slice(0, 3),
+    advantages: toArray(summary.advantages).map(normalizeAiSearchText).filter(Boolean).slice(0, 3),
+    tradeoffs: toArray(summary.tradeoffs).map(normalizeAiSearchText).filter(Boolean).slice(0, 3),
+    dimensionInsights: normalizeDimensionInsightItems(summary.dimensionInsights).slice(0, 8),
+    keyTakeaways: toArray(summary.keyTakeaways).map(normalizeAiSearchText).filter(Boolean).slice(0, 4),
+    ratingRead: toArray(summary.ratingRead).map(normalizeAiSearchText).filter(Boolean).slice(0, 3),
+    confidence: summary.confidence,
+  };
+}
+
+function compactKnowBeforePromptPayload(payload = {}) {
+  const poi = payload.poi && typeof payload.poi === "object" ? payload.poi : {};
+  const ratings = payload.ratings || poi.ratings || {};
+
+  return {
+    cacheIdentity: payload.cacheIdentity || poi.cacheIdentity || null,
+    poi: {
+      id: normalizeAiSearchText(poi.id || poi.placeId),
+      name: normalizeAiSearchText(poi.name),
+      type: poi.type === "hotel" ? "hotel" : "restaurant",
+      city: normalizeAiSearchText(poi.city),
+      area: normalizeAiSearchText(poi.area || poi.address),
+      category: normalizeAiSearchText(poi.category),
+      description: normalizeAiSearchText(poi.description).slice(0, 700),
+      price: normalizeAiSearchText(poi.price),
+    },
+    ratings: compactRatingMap(ratings),
+    sources: toArray(payload.sources)
+      .slice(0, 10)
+      .map((source) => ({
+        name: normalizeAiSearchText(source?.name || source?.category).slice(0, 120),
+        category: normalizeAiSearchText(source?.category).slice(0, 160),
+        description: normalizeAiSearchText(source?.description).slice(0, 650),
+        city: normalizeAiSearchText(source?.city).slice(0, 120),
+        area: normalizeAiSearchText(source?.area || source?.address).slice(0, 160),
+        ratings: compactRatingMap(source?.ratings || {}),
+        reviewsPreview: compactPreviewList(source?.reviewsPreview, 2),
+        photosPreview: compactPreviewList(source?.photosPreview, 2),
+        urls: [source?.url, source?.sourceUrl, ...toArray(source?.urls)]
+          .map(normalizeAiSearchText)
+          .filter(Boolean)
+          .slice(0, 4),
+      })),
+  };
+}
+
 function getSourceSignals(sources) {
   return sources
     .flatMap((source) => [
@@ -1545,13 +1655,13 @@ function buildFallbackDimensionInsights(poi, ratings, sourceSignals, ratingSumma
   return dimensions.map((label) => {
     if (poi.type === "hotel") {
       const hotelSummaries = {
-        价格与性价比: poi.price && poi.price !== "暂无价格信息" ? `当前价格线索为 ${poi.price}，需结合 Booking/Agoda 近期房价判断性价比。` : "当前来源未明确给出价格或费用细节，性价比需要打开预订平台核对实时房价。",
-        位置与交通便利性: poi.area ? `位置线索为 ${poi.area}，建议结合地图确认到目的地和公共交通的距离。` : "当前来源未明确提及交通便利性，需要核对地图位置。",
-        清洁度与卫生安全: "当前来源未明确提及清洁度或卫生安全细节，建议重点查看近期低分评论。",
-        房间本身: signal ? `公开来源线索提到：${signal}。房间面积、隔音、床品等仍需查看近期评论确认。` : "当前来源未明确提及房间面积、隔音、床品或景观等房间细节。",
-        设施与服务: "当前来源未明确提及早餐、健身房、泳池、前台等设施服务细节，建议补查平台评论。",
-        品牌与信任感: ratingSummary !== "暂无可比较评分" ? `评分信号为：${ratingSummary}。可作为品牌/口碑可信度的初步判断。` : "当前评分覆盖不足，品牌与信任感需要更多平台交叉验证。",
-        场景匹配: poi.category ? `当前定位为 ${poi.category}，是否适合商务、亲子、度假或短住仍需结合行程需求判断。` : "当前来源未明确适合的住宿场景，需要结合行程需求再判断。",
+        价格与性价比: poi.price && poi.price !== "暂无价格信息" ? `可形成的判断是：当前价格线索为 ${poi.price}，但还不能直接说明性价比高低。真正决定是否值得订的是实时房价与 Booking/Agoda 同区域竞品的价差。` : "当前来源未明确给出价格或费用细节，所以性价比是主要盲区。下单前应优先核对实时房价、税费和可取消政策，而不是只看总评分。",
+        位置与交通便利性: poi.area ? `位置判断的锚点是 ${poi.area}：这能帮助确认是否贴合你的目的地，但还不能证明交通便利。建议把它放到地图上对照地铁/办公点/景点步行时间，尤其是夜间到达路线。` : "当前来源未明确提及交通便利性，无法判断它是不是“省时间”的酒店。需要先核对地图位置、最近交通点和夜间抵达路线。",
+        清洁度与卫生安全: "当前来源未明确提及清洁度或卫生安全细节，因此这项不能被总评分替代。更有价值的做法是查看最近 1-3 个月低分评论里是否反复出现卫生、异味、虫害或维护问题。",
+        房间本身: signal ? `房间体验目前只能借助公开线索判断：${signal}。面积、隔音、床品、窗景和空调稳定性仍是入住舒适度的关键验证点。` : "当前来源未明确提及房间面积、隔音、床品或景观等细节。若是商务或长住场景，房间本身的不确定性比大堂和公共区域更影响体验。",
+        设施与服务: "当前来源未明确提及早餐、健身房、泳池、前台响应或寄存等设施服务细节。若你依赖这些服务，应把它们作为订前核对项，而不是默认酒店都会稳定提供。",
+        品牌与信任感: ratingSummary !== "暂无可比较评分" ? `品牌/信任感的初步依据是：${ratingSummary}。如果多平台评分接近且评价量充足，可信度更高；如果只来自单一平台，则仍需看近期评论确认稳定性。` : "当前评分覆盖不足，品牌与信任感不能只靠名称或单一平台判断。需要更多平台交叉验证，尤其关注近期差评是否集中在同类问题。",
+        场景匹配: poi.category ? `从定位看它更接近 ${poi.category}，但是否适合商务、亲子、度假或短住还取决于位置、房间和服务细节。若你的行程对通勤、安全或安静度敏感，应把这些放在总评分之前。` : "当前来源未明确适合的住宿场景。建议先定义你的核心场景：省通勤、睡得好、亲子便利还是预算优先，再看评论是否支持这些需求。",
       };
       return { label, summary: hotelSummaries[label] };
     }
@@ -1562,23 +1672,23 @@ function buildFallbackDimensionInsights(poi, ratings, sourceSignals, ratingSumma
 
     const restaurantSummaries = {
       环境: environmentSignal
-        ? `环境相关评论线索：${environmentSignal}。${poi.area ? `这条判断需要和 ${poi.area} 这家分店对应起来看。` : "仍建议核对具体分店。"}`
+        ? `环境上的有效判断是：${environmentSignal}。${poi.area ? `这条线索需要和 ${poi.area} 这家分店对应起来看，因为同品牌不同门店的空间、排队和噪音差异可能很大。` : "仍建议核对具体分店，避免同名门店串店。"}`
         : poi.area
-          ? `位置/分店线索为 ${poi.area}。当前来源未明确提及店内空间、座位、排队或噪音等环境细节。`
-          : "当前来源未明确提及店内空间、座位、排队或噪音等环境细节。",
+          ? `位置/分店线索为 ${poi.area}，但当前来源未明确提及店内空间、座位、排队或噪音。环境是当前决策盲区，若你在意约会、久坐或带家人，应先看近期照片和低分评论。`
+          : "当前来源未明确提及店内空间、座位、排队或噪音。环境是当前决策盲区，不能用总评分直接替代。",
       氛围: signal
-        ? `可参考的氛围线索：${signal}。是否适合约会、聚餐、独食或快餐，需要结合你的场景判断。`
+        ? `氛围上最可用的线索是：${signal}。这能帮助判断它更适合“专程体验”还是“顺路解决”，但是否适合约会、聚餐或独食仍要结合你的场景。`
         : poi.category
-          ? `餐厅定位为 ${poi.category}，但当前来源未明确描述实际氛围。`
-          : "当前来源未明确提及氛围，需要查看评论中的用餐场景描述。",
+          ? `餐厅定位为 ${poi.category}，可先把它理解为该品类下的候选，而不是已经确认有好氛围。当前来源未明确描述实际氛围，建议查看评论里的“适合谁去”和照片中的客群/灯光/座位。`
+          : "当前来源未明确提及氛围。建议查看评论中的用餐场景描述，尤其是是否吵、是否适合久坐、是否需要排队。",
       口味: tasteSignal
-        ? `口味相关评论线索：${tasteSignal}。评分概览为 ${ratingSummary}，可作为口味稳定性的辅助信号。`
+        ? `口味上的核心线索是：${tasteSignal}。结合评分概览 ${ratingSummary}，它更像是已有口碑支撑的选择，但仍需核对具体推荐菜是否符合你的偏好。`
         : ratingSummary !== "暂无可比较评分"
-          ? `评分概览：${ratingSummary}。这能反映整体口碑，但当前来源未明确提及具体招牌菜或口味风格。`
-          : "当前来源未明确提及菜品口味或招牌菜，需要补查评论。",
+          ? `评分概览为 ${ratingSummary}，说明整体口碑有参考价值，但它没有告诉你“为什么好吃”。当前来源未明确提及具体招牌菜或口味风格，因此适合初筛，不适合直接做最终决定。`
+          : "当前来源未明确提及菜品口味或招牌菜。没有口味证据时，不建议只凭热度或名称做决定。",
       服务: serviceSignal
-        ? `服务相关评论线索：${serviceSignal}。建议继续核对服务速度、态度和排队管理是否稳定。`
-        : "当前来源未明确提及服务速度、态度或排队管理情况。",
+        ? `服务上的可用线索是：${serviceSignal}。如果你赶时间或带人赴约，应继续核对服务速度、态度和排队管理是否稳定。`
+        : "当前来源未明确提及服务速度、态度或排队管理。服务是体验波动项，尤其热门店可能高分但排队/翻台/接待体验不稳定。",
     };
     return { label, summary: restaurantSummaries[label] };
   });
@@ -1609,24 +1719,73 @@ function normalizeDimensionInsightItems(value) {
   return [];
 }
 
+function normalizeKnowBeforeText(value, fallback = "", maxLength = 900) {
+  const text = normalizeAiSearchText(value);
+  const next = text || normalizeAiSearchText(fallback);
+  return next.slice(0, maxLength);
+}
+
+function normalizeKnowBeforeList(value, fallbackValue, limit, maxLength = 280) {
+  const primary =
+    Array.isArray(value)
+      ? value
+      : typeof value === "string"
+        ? [value]
+        : [];
+  const fallback =
+    Array.isArray(fallbackValue)
+      ? fallbackValue
+      : typeof fallbackValue === "string"
+        ? [fallbackValue]
+        : [];
+  const seen = new Set();
+
+  return [...primary, ...fallback]
+    .map((item) => normalizeAiSearchText(item))
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit)
+    .map((item) => item.slice(0, maxLength));
+}
+
 function normalizeKnowBeforeSummary(summary, fallback, type) {
   const expectedLabels = getInsightDimensions(type);
+  const normalized = summary && typeof summary === "object" ? summary : {};
   const summaryDimensions = new Map(
-    normalizeDimensionInsightItems(summary?.dimensionInsights).map((item) => [item.label, item.summary]),
+    normalizeDimensionInsightItems(normalized.dimensionInsights).map((item) => [item.label, item.summary]),
   );
   const fallbackDimensions = new Map(
     normalizeDimensionInsightItems(fallback.dimensionInsights).map((item) => [item.label, item.summary]),
   );
+  const overview = normalizeKnowBeforeText(normalized.overview, fallback.overview, 1100);
 
   return {
     ...fallback,
-    ...(summary && typeof summary === "object" ? summary : {}),
+    ...normalized,
+    headline: normalizeKnowBeforeText(normalized.headline, fallback.headline, 220),
+    overview: overview.length >= 40 ? overview : fallback.overview,
+    uniqueTraits: normalizeKnowBeforeList(normalized.uniqueTraits, fallback.uniqueTraits, 3, 320),
+    advantages: normalizeKnowBeforeList(normalized.advantages, fallback.advantages, 3, 320),
+    tradeoffs: normalizeKnowBeforeList(normalized.tradeoffs, fallback.tradeoffs, 3, 340),
+    keyTakeaways: normalizeKnowBeforeList(normalized.keyTakeaways, fallback.keyTakeaways, 4, 320),
+    bestFor: normalizeKnowBeforeList(normalized.bestFor, fallback.bestFor, 3, 280),
+    watchouts: normalizeKnowBeforeList(normalized.watchouts, fallback.watchouts, 3, 320),
+    decisionTips: normalizeKnowBeforeList(normalized.decisionTips, fallback.decisionTips, 3, 320),
+    ratingRead: normalizeKnowBeforeList(normalized.ratingRead, fallback.ratingRead, 3, 320),
+    sourceSummary: normalizeKnowBeforeText(normalized.sourceSummary, fallback.sourceSummary, 420),
+    confidence: ["high", "medium", "low"].includes(normalized.confidence) ? normalized.confidence : fallback.confidence,
     dimensionInsights: expectedLabels.map((label) => ({
       label,
-      summary:
-        summaryDimensions.get(label) ||
-        fallbackDimensions.get(label) ||
-        `当前来源未明确提及${label}，建议查看近期评论后再判断。`,
+      summary: normalizeKnowBeforeText(
+        summaryDimensions.get(label),
+        fallbackDimensions.get(label) || `当前来源未明确提及${label}，建议查看近期评论后再判断。`,
+        560,
+      ),
     })),
   };
 }
@@ -1735,21 +1894,9 @@ async function handleKnowBeforeYouGo(req, res, url) {
     const forceRefresh = url.searchParams.get("refresh") === "1" || req.headers["x-cache-refresh"] === "1";
     const cacheOnly = url.searchParams.get("cacheOnly") === "1";
     const cacheKey = getKnowBeforeCacheKey(payload);
-    const legacyCacheKey = makeCacheKey({
-      kind: "know-before-you-go",
-      payload: getLegacyKnowBeforePayload(payload),
-    });
-    const cached = getCacheEntry(cacheKey) || (legacyCacheKey !== cacheKey ? getCacheEntry(legacyCacheKey) : null);
+    const cached = getCacheEntry(cacheKey);
 
     if (cached && !forceRefresh) {
-      if (!getCacheEntry(cacheKey)) {
-        writeCacheEntry(cacheKey, cached.payload, {
-          source: "know-before-you-go",
-          cacheScope: "poi-identity",
-          migratedFrom: "payload",
-        });
-      }
-
       sendJson(
         res,
         200,
@@ -1805,46 +1952,50 @@ async function handleKnowBeforeYouGo(req, res, url) {
     }
 
     const prompt = `
-You are helping a user decide whether to visit a POI. Create an information-rich "Know Before You Go" decision brief in Simplified Chinese based only on the provided evidence.
+You are helping a user decide whether to visit a POI. Create an insight-led, information-rich "Know Before You Go" decision brief in Simplified Chinese based only on the provided evidence.
 
 Requirements:
 - Summarize the most important facts across ALL available provider evidence: ratings, review counts, platform coverage, source snippets, address/branch signals, photos/review previews, and conflicts or missing data.
-- Give enough substance for a user to decide whether this POI is worth visiting, booking, queueing for, or skipping.
+- Do NOT merely restate the data. Turn the evidence into useful points of view: what this POI is good for, where it is weak, what is uncertain, and what a user should verify before committing.
+- Give enough substance for a user to decide whether this POI is worth visiting, booking, queueing for, or skipping. The brief should feel like a knowledgeable local advisor, not a generic summary.
 - Make the POI's DISTINCTIVE traits, advantages, and downside tradeoffs stand out. Explain what makes this specific POI different from a generic restaurant/hotel.
 - Distinguish "advantages" from "tradeoffs": advantages are reasons to choose it; tradeoffs are reasons a user may hesitate, skip, or verify first.
 - Make the summary close to the POI itself, not a generic destination summary.
 - If the POI type is restaurant, you MUST summarize these exact dimensions: 环境, 氛围, 口味, 服务.
 - If the POI type is hotel, you MUST summarize these exact dimensions: 价格与性价比, 位置与交通便利性, 清洁度与卫生安全, 房间本身, 设施与服务, 品牌与信任感, 场景匹配.
-- Each dimension summary should be 1-2 Chinese sentences and should use concrete evidence from ratings, review snippets, descriptions, category, location/branch signals, and source reliability. If a dimension is not mentioned in evidence, explicitly say 当前来源未明确提及 and explain what the user should verify.
+- Keep these dimension labels exactly as listed. Do not add or remove dimensions.
+- Each dimension summary should be 2 Chinese sentences when possible: sentence 1 gives a clear judgment or useful interpretation; sentence 2 cites concrete evidence or names the exact missing/conflicting evidence to verify.
+- If a dimension is not mentioned in evidence, explicitly say 当前来源未明确提及, but still explain why that missing dimension matters for the decision and what specific thing the user should verify.
+- Every bullet should contain at least one concrete signal when available: platform name, score, review count, source coverage, category, address/area, source snippet, or a named uncertainty. Avoid empty advice such as "查看近期评论" unless you explain what to look for.
 - Be specific when evidence is specific; explicitly say when a data point is missing or uncertain.
 - Do not invent opening hours, prices, awards, menu items, amenities, policies, or operational details unless they appear in evidence.
-- Prefer practical, decision-oriented language over generic praise.
+- Prefer practical, decision-oriented language over generic praise. It is acceptable to say "适合", "谨慎", or "不建议只凭当前信息决定" when evidence supports that stance.
 
 Return ONLY valid JSON:
 {
-  "headline": "short title naming the POI and core verdict",
-  "overview": "2-4 sentences with the key overall summary and decision context",
-  "uniqueTraits": ["3 bullets explaining what is distinctive about this exact POI"],
-  "advantages": ["3 concrete strengths or reasons to choose it"],
+  "headline": "short title naming the POI and core verdict or stance",
+  "overview": "3-5 sentences with the key overall judgment, strongest evidence, gaps, and decision context",
+  "uniqueTraits": ["3 information-rich bullets explaining what is distinctive about this exact POI"],
+  "advantages": ["3 concrete strengths or reasons to choose it, each grounded in evidence"],
   "tradeoffs": ["3 concrete downsides, uncertainty points, or reasons to verify before going"],
   "dimensionInsights": [
-    { "label": "dimension name", "summary": "POI-specific summary grounded in evidence" }
+    { "label": "dimension name", "summary": "2-sentence POI-specific judgment grounded in evidence" }
   ],
-  "keyTakeaways": ["4 concrete bullets with the most important facts"],
-  "ratingRead": ["3 bullets explaining how to interpret the ratings, review counts, coverage, and confidence"],
-  "bestFor": ["3 bullets describing who this is best for"],
+  "keyTakeaways": ["4 high-signal bullets with the most important decision facts"],
+  "ratingRead": ["3 bullets explaining how to interpret the ratings, review counts, coverage, confidence, and conflicts"],
+  "bestFor": ["3 bullets describing who this is best for and why"],
   "watchouts": ["3 bullets with risks, uncertainty, missing data, or practical caveats"],
-  "decisionTips": ["3 practical next-step bullets"],
+  "decisionTips": ["3 practical next-step bullets that say exactly what to check or compare"],
   "sourceSummary": "one sentence naming which sources were actually useful and any notable gaps",
   "confidence": "high|medium|low"
 }
 
 Evidence:
-${JSON.stringify(payload, null, 2)}
+${JSON.stringify(compactKnowBeforePromptPayload(payload))}
 `;
 
     try {
-      const modelData = await geminiGenerateRatings(prompt, false, 25000);
+      const modelData = await geminiGenerateRatings(prompt, false, getGeminiTaskOptions("knowBefore"));
       const text = modelData.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
       const parsed = extractJsonObject(text);
       sendJson(res, 200, {
@@ -2143,7 +2294,7 @@ Rules:
   try {
     let modelData;
     try {
-      modelData = await geminiGenerateRatings(prompt, true, 30000, AI_SEARCH_MODEL);
+      modelData = await geminiGenerateRatings(prompt, true, getGeminiTaskOptions("aiSearchGrounded"));
     } catch (error) {
       if (!isAbortError(error) && !isGeminiLocationUnsupported(error)) throw error;
       modelData = await geminiGenerateRatings(
@@ -2151,8 +2302,7 @@ Rules:
 
 Google Search grounding is unavailable or timed out. Return a conservative answer from model knowledge. If uncertain, return fewer candidates.`,
         false,
-        20000,
-        AI_SEARCH_MODEL,
+        getGeminiTaskOptions("aiSearchFallback"),
       );
     }
 
@@ -2393,7 +2543,7 @@ Rules:
   try {
     let modelData;
     try {
-      modelData = await geminiGenerateRatings(prompt, false, 30000, ROUTE_PLAN_MODEL);
+      modelData = await geminiGenerateRatings(prompt, false, getGeminiTaskOptions("routePlan"));
     } catch (error) {
       if (!isAbortError(error) && !isGeminiLocationUnsupported(error)) throw error;
       modelData = await geminiGenerateRatings(
@@ -2401,8 +2551,7 @@ Rules:
 
 The previous request timed out or the runtime location is unsupported. Return a conservative route plan from the provided stops only.`,
         false,
-        20000,
-        ROUTE_PLAN_MODEL,
+        getGeminiTaskOptions("routePlanFallback"),
       );
     }
 
@@ -2436,7 +2585,7 @@ The previous request timed out or the runtime location is unsupported. Return a 
 
 function normalizeCompanionMessage(message) {
   const role = message?.role === "assistant" ? "assistant" : "user";
-  const text = normalizeAiSearchText(message?.text || message?.answer || "").slice(0, 1800);
+  const text = normalizeAiSearchText(message?.text || message?.answer || "").slice(0, 900);
   return text ? { role, text } : null;
 }
 
@@ -2450,23 +2599,26 @@ function compactCompanionContext(context = {}) {
       city: normalizeAiSearchText(poi.city),
       area: normalizeAiSearchText(poi.area),
       category: normalizeAiSearchText(poi.category),
-      description: normalizeAiSearchText(poi.description).slice(0, 900),
+      description: normalizeAiSearchText(poi.description).slice(0, 700),
       price: normalizeAiSearchText(poi.price),
     },
-    ratings: context.ratings && typeof context.ratings === "object" ? context.ratings : {},
-    knowBeforeYouGo: context.knowBeforeYouGo && typeof context.knowBeforeYouGo === "object" ? context.knowBeforeYouGo : null,
+    ratings: compactRatingMap(context.ratings || {}),
+    knowBeforeYouGo: compactKnowBeforeSummaryForPrompt(context.knowBeforeYouGo),
     sources: toArray(context.sources)
-      .slice(0, 16)
+      .slice(0, 10)
       .map((source) => ({
         name: normalizeAiSearchText(source?.name || source?.category).slice(0, 120),
         category: normalizeAiSearchText(source?.category).slice(0, 160),
-        description: normalizeAiSearchText(source?.description).slice(0, 900),
+        description: normalizeAiSearchText(source?.description).slice(0, 650),
         city: normalizeAiSearchText(source?.city).slice(0, 120),
         area: normalizeAiSearchText(source?.area).slice(0, 160),
-        ratings: source?.ratings && typeof source.ratings === "object" ? source.ratings : {},
-        reviewsPreview: toArray(source?.reviewsPreview).slice(0, 4),
-        photosPreview: toArray(source?.photosPreview).slice(0, 4),
-        urls: toArray(source?.urls).slice(0, 6),
+        ratings: compactRatingMap(source?.ratings || {}),
+        reviewsPreview: compactPreviewList(source?.reviewsPreview, 2),
+        photosPreview: compactPreviewList(source?.photosPreview, 2),
+        urls: [source?.url, source?.sourceUrl, ...toArray(source?.urls)]
+          .map(normalizeAiSearchText)
+          .filter(Boolean)
+          .slice(0, 4),
       })),
     platformStatuses: context.platformStatuses && typeof context.platformStatuses === "object" ? context.platformStatuses : {},
   };
@@ -2529,7 +2681,7 @@ async function handlePoiCompanion(req, res) {
 
   const question = normalizeAiSearchText(payload.question).slice(0, 1200);
   const context = compactCompanionContext(payload.context || {});
-  const messages = toArray(payload.messages).map(normalizeCompanionMessage).filter(Boolean).slice(-8);
+  const messages = toArray(payload.messages).map(normalizeCompanionMessage).filter(Boolean).slice(-6);
 
   if (!question) {
     sendJson(res, 400, { error: "Missing question" });
@@ -2563,10 +2715,10 @@ Return ONLY valid JSON:
 }
 
 POI context:
-${JSON.stringify(context, null, 2)}
+${JSON.stringify(context)}
 
 Recent conversation:
-${JSON.stringify(messages, null, 2)}
+${JSON.stringify(messages)}
 
 Latest user question:
 ${question}
@@ -2575,7 +2727,7 @@ ${question}
   try {
     let modelData;
     try {
-      modelData = await geminiGenerateRatings(prompt, false, 30000, COMPANION_MODEL);
+      modelData = await geminiGenerateRatings(prompt, false, getGeminiTaskOptions("companion"));
     } catch (error) {
       if (!isAbortError(error) && !isGeminiLocationUnsupported(error)) throw error;
       modelData = await geminiGenerateRatings(
@@ -2583,8 +2735,7 @@ ${question}
 
 The previous request timed out or the runtime location is unsupported. Return a conservative answer using only the provided POI context.`,
         false,
-        20000,
-        COMPANION_MODEL,
+        getGeminiTaskOptions("companionFallback"),
       );
     }
 
@@ -3050,12 +3201,62 @@ function isGeminiLocationUnsupported(error) {
   );
 }
 
-async function geminiGenerateRatings(prompt, useSearch, timeoutMs = 30000, modelName = geminiModel) {
+function normalizeGeminiGenerateOptions(timeoutOrOptions, modelNameOrOptions, extraOptions) {
+  const options =
+    timeoutOrOptions && typeof timeoutOrOptions === "object"
+      ? { ...timeoutOrOptions }
+      : { timeoutMs: timeoutOrOptions };
+
+  if (modelNameOrOptions && typeof modelNameOrOptions === "object") {
+    Object.assign(options, modelNameOrOptions);
+  }
+
+  if (extraOptions && typeof extraOptions === "object") {
+    Object.assign(options, extraOptions);
+  }
+
+  return {
+    ...options,
+    modelName: GEMINI_FAST_MODEL,
+    timeoutMs: options.timeoutMs || 18000,
+    generationConfig: {
+      ...GEMINI_BASE_GENERATION_CONFIG,
+      ...(options.generationConfig || {}),
+    },
+  };
+}
+
+function shouldRetryGeminiWithoutThinkingConfig(error) {
+  const message = `${error?.message || ""} ${JSON.stringify(error?.payload || {})}`;
+  return /thinkingConfig|thinking_budget|thinkingBudget|responseMimeType|response_mime_type|Unknown name|Invalid JSON payload/i.test(message);
+}
+
+async function fetchGeminiGenerateContent(prompt, useSearch, options) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+  const generationConfig = {
+    ...(options.generationConfig || {}),
+  };
+
+  if (!geminiThinkingConfigEnabled) {
+    delete generationConfig.thinkingConfig;
+  }
+  if (!geminiJsonModeEnabled) {
+    delete generationConfig.responseMimeType;
+  }
+
+  const body = {
+    contents: [
+      {
+        parts: [{ text: prompt }],
+      },
+    ],
+    generationConfig,
+    ...(useSearch ? { tools: [{ google_search: {} }] } : {}),
+  };
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(options.modelName)}:generateContent`,
     {
       method: "POST",
       signal: controller.signal,
@@ -3063,14 +3264,7 @@ async function geminiGenerateRatings(prompt, useSearch, timeoutMs = 30000, model
         "content-type": "application/json",
         "x-goog-api-key": geminiApiKey,
       },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [{ text: prompt }],
-          },
-        ],
-        ...(useSearch ? { tools: [{ google_search: {} }] } : {}),
-      }),
+      body: JSON.stringify(body),
     },
   ).finally(() => clearTimeout(timeout));
   const data = await response.json();
@@ -3084,6 +3278,32 @@ async function geminiGenerateRatings(prompt, useSearch, timeoutMs = 30000, model
   }
 
   return data;
+}
+
+async function geminiGenerateRatings(prompt, useSearch, timeoutOrOptions = 18000, modelNameOrOptions, extraOptions) {
+  const options = normalizeGeminiGenerateOptions(timeoutOrOptions, modelNameOrOptions, extraOptions);
+
+  try {
+    return await fetchGeminiGenerateContent(prompt, useSearch, options);
+  } catch (error) {
+    if (
+      (!options.generationConfig?.thinkingConfig && !options.generationConfig?.responseMimeType) ||
+      !shouldRetryGeminiWithoutThinkingConfig(error)
+    ) {
+      throw error;
+    }
+
+    geminiThinkingConfigEnabled = false;
+    geminiJsonModeEnabled = false;
+    return fetchGeminiGenerateContent(prompt, useSearch, {
+      ...options,
+      generationConfig: {
+        ...options.generationConfig,
+        thinkingConfig: undefined,
+        responseMimeType: undefined,
+      },
+    });
+  }
 }
 
 async function handleGeminiRatings(req, res, url) {
@@ -3139,7 +3359,7 @@ Rules:
     let groundingUnavailable = false;
 
     try {
-      data = await geminiGenerateRatings(prompt, true, 35000);
+      data = await geminiGenerateRatings(prompt, true, getGeminiTaskOptions("ratingGrounded"));
     } catch (error) {
       groundingUnavailable = isGeminiLocationUnsupported(error);
       const groundingTimedOut = isAbortError(error);
@@ -3153,7 +3373,7 @@ Rules:
 
 Google Search grounding is unavailable or timed out in this runtime, so answer only if you can infer from reliable public knowledge in the model context. If you are uncertain, return an empty ratings object. Do not guess.`,
         false,
-        20000,
+        getGeminiTaskOptions("ratingFallback"),
       );
       groundingUnavailable = groundingUnavailable || groundingTimedOut;
     }
