@@ -9,6 +9,7 @@ const PROVIDER_BATCH_SOURCES = ["tripadvisor", "booking", "yelp", "michelin", "b
 
 const USER_RATINGS_STORAGE_KEY = "poi-ratings:user-ratings";
 const HOME_LOCATION_STORAGE_KEY = "poi-ratings:home-location";
+const COMPANION_FAB_STORAGE_KEY = "poi-ratings:companion-fab-position";
 
 const PLATFORM_SEARCH_URLS = {
   Agoda: (poi) => `https://www.agoda.com/search?text=${encodeURIComponent(`${poi.name} ${poi.city}`)}`,
@@ -196,6 +197,7 @@ const poiData = [
 ];
 
 const savedHomeLocation = loadHomeLocation();
+const savedCompanionFabPosition = loadCompanionFabPosition();
 const DEFAULT_HOME_LOCATION = {
   city: "New York",
   district: "Manhattan",
@@ -297,6 +299,15 @@ const state = {
   knowBeforeYouGoError: "",
   knowBeforeYouGoSignature: "",
   knowBeforeYouGoCache: null,
+  companionOpen: false,
+  companionActivePoiId: "",
+  companionPoiSnapshot: null,
+  companionContextSnapshot: null,
+  companionThreads: {},
+  companionStatus: "idle",
+  companionError: "",
+  companionWarning: "",
+  companionFabPosition: savedCompanionFabPosition,
   providerBatchId: 0,
   providerPendingCount: 0,
   providerTotalCount: 0,
@@ -375,6 +386,7 @@ const elements = {
   poiList: document.querySelector("#poiList"),
   detailPanel: document.querySelector(".detail-panel"),
   detailView: document.querySelector("#detailView"),
+  companionPortal: document.querySelector("#companionPortal"),
   resultCount: document.querySelector("#resultCount"),
   resultsTitle: document.querySelector("#resultsTitle"),
   emptyTemplate: document.querySelector("#emptyTemplate"),
@@ -409,6 +421,9 @@ let exploreMapSearchToken = 0;
 let routeSearchTimer = null;
 let routeSearchToken = 0;
 let routePlanToken = 0;
+let companionToken = 0;
+let companionDragState = null;
+let companionFabSuppressClick = false;
 let googleIdentityLoadPromise = null;
 let googleSignInInitialized = false;
 let googleFallbackTimer = null;
@@ -467,6 +482,26 @@ function saveHomeLocation() {
       lng: state.homeLocationLng,
     }),
   );
+}
+
+function loadCompanionFabPosition() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(COMPANION_FAB_STORAGE_KEY) || "null");
+    if (!stored || typeof stored !== "object") return null;
+    const left = Number(stored.left);
+    const top = Number(stored.top);
+    return Number.isFinite(left) && Number.isFinite(top) ? { left, top } : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCompanionFabPosition() {
+  if (!state.companionFabPosition) {
+    localStorage.removeItem(COMPANION_FAB_STORAGE_KEY);
+    return;
+  }
+  localStorage.setItem(COMPANION_FAB_STORAGE_KEY, JSON.stringify(state.companionFabPosition));
 }
 
 function scheduleImageCacheRender() {
@@ -833,6 +868,14 @@ function clearProviderResults() {
   state.knowBeforeYouGoError = "";
   state.knowBeforeYouGoSignature = "";
   state.knowBeforeYouGoCache = null;
+  state.companionOpen = false;
+  state.companionActivePoiId = "";
+  state.companionPoiSnapshot = null;
+  state.companionContextSnapshot = null;
+  state.companionStatus = "idle";
+  state.companionError = "";
+  state.companionWarning = "";
+  companionToken += 1;
 }
 
 function beginProviderBatch() {
@@ -1478,6 +1521,295 @@ function maybeGenerateKnowBeforeYouGo(options = {}) {
       if (token === knowBeforeYouGoToken) render();
     }
   }, force ? 0 : 800);
+}
+
+function getCompanionPoiKey(poi) {
+  return poi?.placeId || poi?.id || `${poi?.type || "poi"}:${normalizeText(poi?.name)}:${normalizeText(poi?.city)}`;
+}
+
+function getCompanionThread(poi) {
+  const key = getCompanionPoiKey(poi);
+  if (!key) return [];
+  if (!state.companionThreads[key]) state.companionThreads[key] = [];
+  return state.companionThreads[key];
+}
+
+function getCurrentCompanionPoi() {
+  const selected = findPoiById(state.selectedId);
+  const merged = mergeProviderRatingsIntoPoi(selected);
+  if (merged && getCompanionPoiKey(merged) === state.companionActivePoiId) return merged;
+  return state.companionPoiSnapshot;
+}
+
+function getCompanionFabStyle() {
+  const position = state.companionFabPosition;
+  if (!position) return "";
+  return ` style="left:${Math.round(position.left)}px; top:${Math.round(position.top)}px; right:auto; bottom:auto;"`;
+}
+
+function clampCompanionFabPosition(left, top) {
+  const size = 62;
+  const margin = 12;
+  const navSafeHeight = 104;
+  const maxLeft = Math.max(margin, window.innerWidth - size - margin);
+  const maxTop = Math.max(margin, window.innerHeight - navSafeHeight - size - margin);
+  return {
+    left: Math.min(Math.max(margin, left), maxLeft),
+    top: Math.min(Math.max(margin, top), maxTop),
+  };
+}
+
+function setCompanionFabPosition(left, top, options = {}) {
+  state.companionFabPosition = clampCompanionFabPosition(left, top);
+  const button = elements.companionPortal?.querySelector(".companion-fab");
+  if (button) {
+    button.style.left = `${Math.round(state.companionFabPosition.left)}px`;
+    button.style.top = `${Math.round(state.companionFabPosition.top)}px`;
+    button.style.right = "auto";
+    button.style.bottom = "auto";
+  }
+  if (options.persist) saveCompanionFabPosition();
+}
+
+function getCompanionSuggestions(poi) {
+  const typeLabel = poi?.type === "hotel" ? "酒店" : "餐厅";
+  if (poi?.type === "hotel") {
+    return [
+      "这家酒店适合商务出差吗？",
+      "位置和交通有什么优劣？",
+      "有哪些入住前要确认的点？",
+    ];
+  }
+  return [
+    `这家${typeLabel}适合约会吗？`,
+    "环境、口味和服务分别怎么样？",
+    "去之前最大的风险是什么？",
+  ];
+}
+
+function renderCompanionStructuredList(title, items) {
+  const normalized = Array.isArray(items) ? items.filter(Boolean).slice(0, 4) : [];
+  if (!normalized.length) return "";
+  return `
+    <div class="companion-message-list">
+      <strong>${escapeHtml(title)}</strong>
+      <ul>${normalized.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </div>
+  `;
+}
+
+function renderCompanionMessage(message) {
+  const role = message.role === "user" ? "user" : "assistant";
+  const confidence = message.confidence ? `<span>${escapeHtml(message.confidence)} confidence</span>` : "";
+  return `
+    <article class="companion-bubble is-${role}">
+      <p>${escapeHtml(message.text || message.answer || "")}</p>
+      ${role === "assistant" ? renderCompanionStructuredList("Evidence", message.highlights) : ""}
+      ${role === "assistant" ? renderCompanionStructuredList("Check before you go", message.caveats) : ""}
+      ${confidence ? `<div class="companion-message-meta">${confidence}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderCompanionPanel(poi) {
+  const messages = getCompanionThread(poi);
+  const location = [poi.area, poi.city].filter(Boolean).join(" · ") || poi.city || "this POI";
+  const suggestions = getCompanionSuggestions(poi);
+  const isLoading = state.companionStatus === "loading";
+  const introBubble =
+    messages.length === 0
+      ? `
+        <article class="companion-bubble is-assistant">
+          <p>我已经读过 ${escapeHtml(poi.name)} 的评分、搜索来源和 Know Before You Go。问我适不适合你的场景、哪里需要确认、或不同平台评分该怎么读。</p>
+        </article>
+      `
+      : "";
+
+  return `
+    <section class="companion-panel" role="dialog" aria-modal="true" aria-label="AI Companion">
+      <div class="companion-scroll">
+        <div class="companion-header">
+          <button type="button" class="companion-close" data-companion-action="close" aria-label="关闭 AI Companion">←</button>
+          <p class="companion-kicker">YOU'RE IN · ${escapeHtml(location)}</p>
+          <h3>Hi, I'm <em>Roamie.</em></h3>
+          <p>Your POI companion for ${escapeHtml(poi.name)}. Ask what matters before you go.</p>
+        </div>
+
+        <div class="companion-suggestions" aria-label="Suggested questions">
+          ${suggestions
+            .map(
+              (suggestion) => `
+                <button type="button" data-companion-prompt="${escapeHtml(suggestion)}">
+                  <span>${escapeHtml(suggestion)}</span>
+                  <strong>→</strong>
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+
+        <div class="companion-thread">
+          ${introBubble}
+          ${messages.map(renderCompanionMessage).join("")}
+          ${
+            isLoading
+              ? `
+                <article class="companion-bubble is-assistant is-loading">
+                  <span></span><span></span><span></span>
+                </article>
+              `
+              : ""
+          }
+          ${
+            state.companionError
+              ? `<article class="companion-bubble is-assistant is-error"><p>${escapeHtml(state.companionError)}</p></article>`
+              : ""
+          }
+          ${state.companionWarning ? `<p class="companion-warning">${escapeHtml(state.companionWarning)}</p>` : ""}
+          <span class="companion-bottom-anchor" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <form class="companion-input-form" data-companion-form>
+        <input id="companionInput" name="question" autocomplete="off" placeholder="Ask Roamie anything..." ${isLoading ? "disabled" : ""} />
+        <button type="submit" aria-label="发送问题" ${isLoading ? "disabled" : ""}>↑</button>
+      </form>
+    </section>
+  `;
+}
+
+function scrollCompanionToBottom() {
+  const scrollNode = elements.companionPortal?.querySelector(".companion-scroll");
+  if (!scrollNode) return;
+  requestAnimationFrame(() => {
+    scrollNode.scrollTop = scrollNode.scrollHeight;
+  });
+}
+
+function renderCompanionPortal() {
+  if (!elements.companionPortal) return;
+  const current = mergeProviderRatingsIntoPoi(findPoiById(state.selectedId));
+  const canShowFab = Boolean(current) && state.userSelectedPoi && !["buddy", "route", "me"].includes(state.activeTab);
+  const activePoi = state.companionOpen ? getCurrentCompanionPoi() || current : current;
+  const fab = canShowFab
+    ? `<button type="button" class="companion-fab" data-companion-action="open" aria-label="打开 AI Companion"${getCompanionFabStyle()}>AI</button>`
+    : "";
+  const panel = state.companionOpen && activePoi ? renderCompanionPanel(activePoi) : "";
+  elements.companionPortal.innerHTML = `${fab}${panel}`;
+  if (state.companionOpen) scrollCompanionToBottom();
+}
+
+function getCompanionContext(poi) {
+  const evidence = getProviderEvidence();
+  const merged = mergeProviderRatingsIntoPoi(findPoiById(state.selectedId)) || poi;
+  return {
+    ...(evidence || {}),
+    poi: evidence?.poi || {
+      id: poi.placeId || poi.id,
+      name: merged.name,
+      type: merged.type,
+      city: merged.city,
+      area: merged.area,
+      category: merged.category,
+      description: merged.description,
+      price: merged.price,
+    },
+    ratings: evidence?.ratings || merged.ratings || {},
+    knowBeforeYouGo: state.knowBeforeYouGo || null,
+    platformStatuses: {
+      google: state.googleStatus,
+      tripAdvisor: state.tripAdvisorStatus,
+      booking: state.bookingStatus,
+      yelp: state.yelpStatus,
+      michelin: state.michelinStatus,
+      brave: state.braveStatus,
+      tavily: state.tavilyStatus,
+      gemini: state.geminiStatus,
+      pendingProviders: state.providerPendingCount,
+    },
+  };
+}
+
+function openCompanion(poi) {
+  if (!poi) return;
+  state.companionOpen = true;
+  state.companionActivePoiId = getCompanionPoiKey(poi);
+  state.companionPoiSnapshot = { ...poi, ratings: { ...(poi.ratings || {}) }, tags: [...(poi.tags || [])] };
+  state.companionContextSnapshot = getCompanionContext(poi);
+  state.companionStatus = "idle";
+  state.companionError = "";
+  state.companionWarning = "";
+  getCompanionThread(poi);
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector("#companionInput")?.focus();
+    scrollCompanionToBottom();
+  });
+}
+
+function closeCompanion() {
+  state.companionOpen = false;
+  state.companionStatus = "idle";
+  state.companionError = "";
+  state.companionWarning = "";
+  companionToken += 1;
+  render();
+}
+
+async function askCompanion(question) {
+  const poi = getCurrentCompanionPoi() || mergeProviderRatingsIntoPoi(findPoiById(state.selectedId));
+  if (!poi || !question.trim() || state.companionStatus === "loading") return;
+
+  const thread = getCompanionThread(poi);
+  const userMessage = { role: "user", text: question.trim() };
+  thread.push(userMessage);
+  state.companionStatus = "loading";
+  state.companionError = "";
+  state.companionWarning = "";
+  render();
+
+  const token = ++companionToken;
+  try {
+    const latestContext =
+      getCompanionPoiKey(poi) === getCompanionPoiKey(mergeProviderRatingsIntoPoi(findPoiById(state.selectedId)))
+        ? getCompanionContext(poi)
+        : state.companionContextSnapshot || getCompanionContext(poi);
+    state.companionContextSnapshot = latestContext;
+    const response = await fetch("/api/poi-companion", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        question: userMessage.text,
+        messages: thread.slice(-8),
+        context: latestContext,
+      }),
+    });
+    const payload = await response.json();
+    if (token !== companionToken) return;
+    if (!response.ok) throw new Error(payload.error || `AI Companion 返回 ${response.status}`);
+    const data = payload.data || {};
+    thread.push({
+      role: "assistant",
+      text: data.answer || "我暂时没有足够信息回答这个问题。",
+      highlights: data.highlights || [],
+      caveats: data.caveats || [],
+      followups: data.followups || [],
+      confidence: data.confidence || "",
+    });
+    state.companionWarning = payload.warning || "";
+  } catch (error) {
+    if (token !== companionToken) return;
+    state.companionError = error.message;
+  } finally {
+    if (token === companionToken) {
+      state.companionStatus = "idle";
+      render();
+      requestAnimationFrame(() => {
+        document.querySelector("#companionInput")?.focus();
+        scrollCompanionToBottom();
+      });
+    }
+  }
 }
 
 function renderDetail(poi) {
@@ -2256,6 +2588,13 @@ async function selectCityPrediction(placeId) {
 
 function setActiveHomeTab(tab) {
   state.activeTab = tab;
+  if (tab !== "discover") {
+    state.companionOpen = false;
+    state.companionActivePoiId = "";
+    state.companionPoiSnapshot = null;
+    state.companionContextSnapshot = null;
+    companionToken += 1;
+  }
   elements.mobileTabbar?.querySelectorAll("button[data-home-nav]").forEach((button) => {
     button.classList.toggle("is-active", button.dataset.homeNav === tab);
   });
@@ -3589,6 +3928,7 @@ function render() {
   } else {
     renderDetail(mergeProviderRatingsIntoPoi(selectedBasePoi));
   }
+  renderCompanionPortal();
   renderGoogleStatus();
   renderTripAdvisorStatus();
   renderBookingStatus();
@@ -4880,6 +5220,11 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
     state.userSelectedPoi = false;
     state.selectedId = null;
     state.detailPageOpen = false;
+    state.companionOpen = false;
+    state.companionActivePoiId = "";
+    state.companionPoiSnapshot = null;
+    state.companionContextSnapshot = null;
+    companionToken += 1;
     elements.searchInput.value = "";
     replaceListHistoryState();
     render();
@@ -4932,6 +5277,69 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
   elements.searchInput.focus();
 });
 
+elements.companionPortal?.addEventListener("pointerdown", (event) => {
+  const button = event.target.closest(".companion-fab");
+  if (!button) return;
+  const rect = button.getBoundingClientRect();
+  companionDragState = {
+    pointerId: event.pointerId,
+    offsetX: event.clientX - rect.left,
+    offsetY: event.clientY - rect.top,
+    startX: event.clientX,
+    startY: event.clientY,
+    moved: false,
+  };
+  button.setPointerCapture?.(event.pointerId);
+});
+
+elements.companionPortal?.addEventListener("pointermove", (event) => {
+  if (!companionDragState || companionDragState.pointerId !== event.pointerId) return;
+  const dx = event.clientX - companionDragState.startX;
+  const dy = event.clientY - companionDragState.startY;
+  if (Math.hypot(dx, dy) > 4) {
+    companionDragState.moved = true;
+    companionFabSuppressClick = true;
+  }
+  setCompanionFabPosition(event.clientX - companionDragState.offsetX, event.clientY - companionDragState.offsetY);
+});
+
+elements.companionPortal?.addEventListener("pointerup", (event) => {
+  if (!companionDragState || companionDragState.pointerId !== event.pointerId) return;
+  if (companionDragState.moved) {
+    setCompanionFabPosition(event.clientX - companionDragState.offsetX, event.clientY - companionDragState.offsetY, { persist: true });
+    setTimeout(() => {
+      companionFabSuppressClick = false;
+    }, 0);
+  }
+  companionDragState = null;
+});
+
+elements.companionPortal?.addEventListener("pointercancel", () => {
+  companionDragState = null;
+  companionFabSuppressClick = false;
+});
+
+elements.companionPortal?.addEventListener("click", (event) => {
+  const companionButton = event.target.closest("button[data-companion-action]");
+  if (companionButton) {
+    if (companionFabSuppressClick) {
+      event.preventDefault();
+      companionFabSuppressClick = false;
+      return;
+    }
+    const poi = mergeProviderRatingsIntoPoi(findPoiById(state.selectedId)) || getCurrentCompanionPoi();
+    if (companionButton.dataset.companionAction === "open") openCompanion(poi);
+    if (companionButton.dataset.companionAction === "close") closeCompanion();
+    return;
+  }
+
+  const companionPrompt = event.target.closest("button[data-companion-prompt]");
+  if (companionPrompt) {
+    askCompanion(companionPrompt.dataset.companionPrompt || "");
+    return;
+  }
+});
+
 elements.detailView.addEventListener("click", (event) => {
   const backButton = event.target.closest("button[data-detail-nav='back']");
   if (backButton) {
@@ -4972,8 +5380,25 @@ elements.detailView.addEventListener("click", (event) => {
   }
 });
 
+elements.companionPortal?.addEventListener("submit", (event) => {
+  const form = event.target.closest("form[data-companion-form]");
+  if (!form) return;
+  event.preventDefault();
+  const input = form.elements.question;
+  const question = input?.value.trim() || "";
+  if (!question) return;
+  input.value = "";
+  askCompanion(question);
+});
+
 window.addEventListener("popstate", handleNavigationPop);
-window.addEventListener("resize", applyNavigationMode);
+window.addEventListener("resize", () => {
+  applyNavigationMode();
+  if (state.companionFabPosition) {
+    const { left, top } = state.companionFabPosition;
+    setCompanionFabPosition(left, top, { persist: true });
+  }
+});
 
 initializeNavigationHistory();
 render();

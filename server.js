@@ -45,6 +45,7 @@ const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_L
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const AI_SEARCH_MODEL = process.env.POI_AI_SEARCH_MODEL || "gemini-2.5-flash";
 const ROUTE_PLAN_MODEL = process.env.POI_ROUTE_PLAN_MODEL || "gemini-2.5-flash";
+const COMPANION_MODEL = process.env.POI_COMPANION_MODEL || "gemini-2.5-flash";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || googleClientId || "";
 const AUTH_COOKIE_NAME = "poi_session";
 const SESSION_MAX_AGE_SECONDS = Number(process.env.POI_SESSION_MAX_AGE_SECONDS || 60 * 60 * 24 * 30);
@@ -2433,6 +2434,175 @@ The previous request timed out or the runtime location is unsupported. Return a 
   }
 }
 
+function normalizeCompanionMessage(message) {
+  const role = message?.role === "assistant" ? "assistant" : "user";
+  const text = normalizeAiSearchText(message?.text || message?.answer || "").slice(0, 1800);
+  return text ? { role, text } : null;
+}
+
+function compactCompanionContext(context = {}) {
+  const poi = context.poi && typeof context.poi === "object" ? context.poi : {};
+  return {
+    poi: {
+      id: normalizeAiSearchText(poi.id || poi.placeId),
+      name: normalizeAiSearchText(poi.name),
+      type: poi.type === "hotel" ? "hotel" : "restaurant",
+      city: normalizeAiSearchText(poi.city),
+      area: normalizeAiSearchText(poi.area),
+      category: normalizeAiSearchText(poi.category),
+      description: normalizeAiSearchText(poi.description).slice(0, 900),
+      price: normalizeAiSearchText(poi.price),
+    },
+    ratings: context.ratings && typeof context.ratings === "object" ? context.ratings : {},
+    knowBeforeYouGo: context.knowBeforeYouGo && typeof context.knowBeforeYouGo === "object" ? context.knowBeforeYouGo : null,
+    sources: toArray(context.sources)
+      .slice(0, 16)
+      .map((source) => ({
+        name: normalizeAiSearchText(source?.name || source?.category).slice(0, 120),
+        category: normalizeAiSearchText(source?.category).slice(0, 160),
+        description: normalizeAiSearchText(source?.description).slice(0, 900),
+        city: normalizeAiSearchText(source?.city).slice(0, 120),
+        area: normalizeAiSearchText(source?.area).slice(0, 160),
+        ratings: source?.ratings && typeof source.ratings === "object" ? source.ratings : {},
+        reviewsPreview: toArray(source?.reviewsPreview).slice(0, 4),
+        photosPreview: toArray(source?.photosPreview).slice(0, 4),
+        urls: toArray(source?.urls).slice(0, 6),
+      })),
+    platformStatuses: context.platformStatuses && typeof context.platformStatuses === "object" ? context.platformStatuses : {},
+  };
+}
+
+function buildFallbackCompanionAnswer(context, question, warning = "") {
+  const poi = context.poi || {};
+  const ratingText = Object.entries(context.ratings || {})
+    .filter(([, rating]) => Number(rating?.score) > 0)
+    .slice(0, 4)
+    .map(([source, rating]) => `${source} ${rating.score}/${rating.max || 5}${rating.reviews ? `，${rating.reviews} 条评价` : ""}`)
+    .join("；");
+  const knowBefore = context.knowBeforeYouGo?.overview || context.knowBeforeYouGo?.headline || "";
+  const base = [
+    `${poi.name || "这个 POI"} 的可用上下文显示：${ratingText || "目前缺少稳定的平台评分"}。`,
+    knowBefore ? `Know Before You Go 摘要提到：${knowBefore}` : "",
+    question ? `关于“${question}”，我建议优先核对近期评论、营业时间、地址分店和与你场景最相关的平台信息。` : "",
+    warning,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    answer: base,
+    highlights: [
+      ratingText || "当前评分覆盖还不完整",
+      poi.area || poi.city ? `位置线索：${[poi.area, poi.city].filter(Boolean).join(", ")}` : "",
+      poi.price ? `价格线索：${poi.price}` : "",
+    ].filter(Boolean),
+    caveats: ["没有在上下文中出现的信息我不会替你编造。", "出发前仍建议确认营业时间、订位和具体分店。"],
+    followups: ["适合我的场景吗？", "最大的风险是什么？", "我应该重点看哪些评论？"],
+    confidence: ratingText || knowBefore ? "medium" : "low",
+  };
+}
+
+function normalizeCompanionAnswer(parsed, fallback) {
+  if (!parsed || typeof parsed !== "object") return fallback;
+  return {
+    answer: normalizeAiSearchText(parsed.answer || parsed.reply || fallback.answer).slice(0, 2600),
+    highlights: toArray(parsed.highlights).map(normalizeAiSearchText).filter(Boolean).slice(0, 4),
+    caveats: toArray(parsed.caveats).map(normalizeAiSearchText).filter(Boolean).slice(0, 4),
+    followups: toArray(parsed.followups).map(normalizeAiSearchText).filter(Boolean).slice(0, 4),
+    confidence: ["high", "medium", "low"].includes(parsed.confidence) ? parsed.confidence : fallback.confidence,
+  };
+}
+
+async function handlePoiCompanion(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readJsonBody(req, 650000);
+  } catch (error) {
+    sendJson(res, error.message === "Invalid JSON" ? 400 : 413, { error: error.message });
+    return;
+  }
+
+  const question = normalizeAiSearchText(payload.question).slice(0, 1200);
+  const context = compactCompanionContext(payload.context || {});
+  const messages = toArray(payload.messages).map(normalizeCompanionMessage).filter(Boolean).slice(-8);
+
+  if (!question) {
+    sendJson(res, 400, { error: "Missing question" });
+    return;
+  }
+
+  const fallback = buildFallbackCompanionAnswer(context, question);
+  if (!geminiApiKey) {
+    sendJson(res, 200, {
+      data: fallback,
+      warning: "Gemini API key 未配置，已使用现有信息生成基础回答。",
+    });
+    return;
+  }
+
+  const prompt = `
+You are Roamie, an AI Companion for one specific POI. You are the user's most knowledgeable assistant about this POI.
+
+Use ONLY the provided POI context. Do not invent facts, opening hours, booking availability, prices, menu items, amenities, policies, awards, or neighborhood claims that are not in the evidence.
+If evidence is missing, say what is unknown and what the user should verify.
+Answer in the user's language. Be warm, concise, practical, and decision-oriented.
+When the user asks for a recommendation, weigh ratings, review counts, platform coverage, Know Before You Go, source snippets, and missing/conflicting signals.
+
+Return ONLY valid JSON:
+{
+  "answer": "natural answer to the user's latest question, grounded in this POI's context",
+  "highlights": ["up to 4 short evidence-backed points"],
+  "caveats": ["up to 4 uncertainty or verification points"],
+  "followups": ["up to 4 useful next questions the user could ask"],
+  "confidence": "high|medium|low"
+}
+
+POI context:
+${JSON.stringify(context, null, 2)}
+
+Recent conversation:
+${JSON.stringify(messages, null, 2)}
+
+Latest user question:
+${question}
+`;
+
+  try {
+    let modelData;
+    try {
+      modelData = await geminiGenerateRatings(prompt, false, 30000, COMPANION_MODEL);
+    } catch (error) {
+      if (!isAbortError(error) && !isGeminiLocationUnsupported(error)) throw error;
+      modelData = await geminiGenerateRatings(
+        `${prompt}
+
+The previous request timed out or the runtime location is unsupported. Return a conservative answer using only the provided POI context.`,
+        false,
+        20000,
+        COMPANION_MODEL,
+      );
+    }
+
+    const text = modelData.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
+    const parsed = extractJsonObject(text);
+    sendJson(res, 200, {
+      data: normalizeCompanionAnswer(parsed, fallback),
+      rawText: text,
+      warning: parsed ? undefined : "Gemini 输出无法解析，已使用基础回答。",
+    });
+  } catch (error) {
+    sendJson(res, 200, {
+      data: buildFallbackCompanionAnswer(context, question, `Gemini 回答失败：${error.message}`),
+      warning: `Gemini 回答失败，已使用基础回答：${error.message}`,
+    });
+  }
+}
+
 function requireSessionUser(req, res) {
   const user = getSessionUser(req);
   if (!user) {
@@ -3450,6 +3620,11 @@ function handleRequest(req, res) {
 
   if (url.pathname === "/api/know-before-you-go") {
     handleKnowBeforeYouGo(req, res, url);
+    return;
+  }
+
+  if (url.pathname === "/api/poi-companion") {
+    handlePoiCompanion(req, res);
     return;
   }
 
