@@ -428,6 +428,18 @@ let exploreMapSearchToken = 0;
 let routeSearchTimer = null;
 let routeSearchToken = 0;
 let routePlanToken = 0;
+const ROUTE_STOP_COLORS = [
+  "#1f1c18",
+  "#d65300",
+  "#1d6f5f",
+  "#315b9d",
+  "#8b3f64",
+  "#6b6f2a",
+  "#5a4a8a",
+  "#00758f",
+  "#7a4f2b",
+  "#3f6b4f",
+];
 let companionToken = 0;
 let companionDragState = null;
 let companionFabSuppressClick = false;
@@ -2937,6 +2949,14 @@ function getRouteStopMeta(stop) {
   return [typeLabel, area].filter(Boolean).join(" · ");
 }
 
+function getRouteStopColor(index) {
+  return ROUTE_STOP_COLORS[index % ROUTE_STOP_COLORS.length];
+}
+
+function getRouteStopStyle(index) {
+  return `--route-stop-color: ${getRouteStopColor(index)}`;
+}
+
 function clearRouteMapOverlays() {
   routeMapMarkers.forEach((marker) => marker.setMap(null));
   routeMapMarkers = [];
@@ -3002,7 +3022,7 @@ function renderRouteStops() {
   elements.routeStops.innerHTML = state.routeStops
     .map(
       (stop, index) => `
-        <article class="route-stop-card ${index === 1 ? "is-accent" : ""}">
+        <article class="route-stop-card" style="${getRouteStopStyle(index)}">
           <span class="route-stop-index">${index + 1}</span>
           <span class="route-stop-copy">
             <strong>${escapeHtml(stop.name)}</strong>
@@ -3094,7 +3114,6 @@ function renderRouteMapMarkers(stops) {
   clearRouteMapOverlays();
   stops.forEach((stop, index) => {
     if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) return;
-    const isAccent = index === 1;
     const marker = new google.maps.Marker({
       map: routeMap,
       position: { lat: stop.lat, lng: stop.lng },
@@ -3108,7 +3127,7 @@ function renderRouteMapMarkers(stops) {
       icon: {
         path: google.maps.SymbolPath.CIRCLE,
         scale: 16,
-        fillColor: isAccent ? "#d65300" : "#1f1c18",
+        fillColor: getRouteStopColor(index),
         fillOpacity: 1,
         strokeColor: "#fffdfa",
         strokeWeight: 3,
@@ -3236,8 +3255,8 @@ function renderRoutePlan() {
       .map((item, index) => {
         const stop = state.routeStops[item.stopIndex] || state.routeStops[index] || {};
         return `
-          <article class="route-itinerary-item">
-            <span class="route-stop-index ${index === 1 ? "is-accent" : ""}">${index + 1}</span>
+          <article class="route-itinerary-item" style="${getRouteStopStyle(index)}">
+            <span class="route-stop-index">${index + 1}</span>
             <span class="route-itinerary-copy">
               <strong>${escapeHtml(item.name || stop.name || `Stop ${index + 1}`)}</strong>
               <small>${escapeHtml(item.subtitle || item.description || getRouteStopMeta(stop))}</small>

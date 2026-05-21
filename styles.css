@@ -749,10 +749,6 @@ h1 {
   background: #f1ede6;
 }
 
-.route-stop-card.is-accent {
-  background: #fffdfa;
-}
-
 .route-stop-index {
   display: inline-grid;
   place-items: center;
@@ -760,15 +756,10 @@ h1 {
   height: 42px;
   border-radius: 999px;
   color: #fff;
-  background: #1f1c18;
+  background: var(--route-stop-color, #1f1c18);
   box-shadow: 0 3px 8px rgba(31, 28, 24, 0.16);
   font-size: 18px;
   font-weight: 900;
-}
-
-.route-stop-card.is-accent .route-stop-index,
-.route-stop-index.is-accent {
-  background: #d65300;
 }
 
 .route-stop-copy,
