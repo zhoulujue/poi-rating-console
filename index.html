@@ -148,6 +148,27 @@
               </div>
             </section>
 
+            <section class="buddy-view" id="buddyView" hidden aria-label="Buddy">
+              <div class="buddy-shell">
+                <iframe
+                  id="buddyFrame"
+                  title="Buddy"
+                  allow="geolocation; microphone; camera; clipboard-read; clipboard-write; fullscreen"
+                  referrerpolicy="strict-origin-when-cross-origin"
+                  loading="eager"
+                  allowfullscreen
+                ></iframe>
+                <div class="buddy-loader" id="buddyLoader" aria-live="polite">
+                  <div class="buddy-loader-dots" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                  <p id="buddyStatus">Buddy 加载中...</p>
+                </div>
+              </div>
+            </section>
+
           </section>
 
           <section class="detail-panel" aria-live="polite">

@@ -3,6 +3,7 @@ const REQUIRED_SOURCES = {
   hotel: ["Google", "Booking", "Agoda", "TripAdvisor"],
 };
 
+const BUDDY_EMBED_URL = "https://dazigo-v2.vercel.app/";
 const PROVIDER_BATCH_SOURCES = ["tripadvisor", "booking", "yelp", "michelin", "brave", "tavily", "gemini"];
 
 const USER_RATINGS_STORAGE_KEY = "poi-ratings:user-ratings";
@@ -234,6 +235,7 @@ const state = {
   explorePois: [],
   exploreSearchSignature: "",
   isSearchingExploreNearby: false,
+  buddyFrameStatus: "idle",
   aiIntent: null,
   aiCandidates: [],
   providerLookup: null,
@@ -314,6 +316,10 @@ const elements = {
   exploreSearchInput: document.querySelector("#exploreSearchInput"),
   exploreStatus: document.querySelector("#exploreStatus"),
   exploreSuggestions: document.querySelector("#exploreSuggestions"),
+  buddyView: document.querySelector("#buddyView"),
+  buddyFrame: document.querySelector("#buddyFrame"),
+  buddyLoader: document.querySelector("#buddyLoader"),
+  buddyStatus: document.querySelector("#buddyStatus"),
   nearYouCity: document.querySelector("#nearYouCity"),
   nearYouRail: document.querySelector("#nearYouRail"),
   trendingCity: document.querySelector("#trendingCity"),
@@ -2450,6 +2456,32 @@ function renderExploreState() {
   requestAnimationFrame(prepareExploreMap);
 }
 
+function ensureBuddyFrameLoaded() {
+  if (!elements.buddyFrame || state.buddyFrameStatus !== "idle") return;
+  state.buddyFrameStatus = "loading";
+  elements.buddyFrame.src = BUDDY_EMBED_URL;
+}
+
+function renderBuddyState() {
+  const active = state.activeTab === "buddy";
+  elements.homeView?.classList.toggle("is-buddy", active);
+  elements.buddyView.hidden = !active;
+  elements.contentGrid?.classList.toggle("is-buddy", active);
+  elements.mobileTabbar?.querySelectorAll("button[data-home-nav]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.homeNav === state.activeTab);
+  });
+
+  if (!active) return;
+
+  ensureBuddyFrameLoaded();
+  if (elements.buddyLoader) {
+    elements.buddyLoader.hidden = state.buddyFrameStatus === "ready";
+  }
+  if (elements.buddyStatus) {
+    elements.buddyStatus.textContent = state.buddyFrameStatus === "error" ? "Buddy 暂时无法加载" : "Buddy 加载中...";
+  }
+}
+
 function scheduleExploreSearch() {
   clearTimeout(exploreSearchTimer);
   const query = elements.exploreSearchInput?.value.trim() || "";
@@ -2674,6 +2706,7 @@ function renderHome(pois) {
   renderHomeFeeds();
   renderHomeSearchState(pois);
   renderExploreState();
+  renderBuddyState();
 }
 
 function render() {
@@ -3841,6 +3874,17 @@ elements.exploreSuggestions?.addEventListener("click", (event) => {
   selectExplorePrediction(button.dataset.explorePlaceId);
 });
 
+elements.buddyFrame?.addEventListener("load", () => {
+  state.buddyFrameStatus = "ready";
+  if (elements.buddyLoader) elements.buddyLoader.hidden = true;
+});
+
+elements.buddyFrame?.addEventListener("error", () => {
+  state.buddyFrameStatus = "error";
+  if (elements.buddyLoader) elements.buddyLoader.hidden = false;
+  if (elements.buddyStatus) elements.buddyStatus.textContent = "Buddy 暂时无法加载";
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.cityPickerOpen) {
     closeCityPicker();
@@ -3929,6 +3973,16 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
     replaceListHistoryState();
     render();
     requestAnimationFrame(prepareExploreMap);
+    return;
+  }
+
+  if (button.dataset.homeNav === "buddy") {
+    setActiveHomeTab("buddy");
+    state.userSelectedPoi = false;
+    state.selectedId = null;
+    state.detailPageOpen = false;
+    replaceListHistoryState();
+    render();
     return;
   }
 
