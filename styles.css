@@ -558,22 +558,26 @@ h1 {
 }
 
 .content-grid.is-explore .detail-panel,
-.content-grid.is-buddy .detail-panel {
+.content-grid.is-buddy .detail-panel,
+.content-grid.is-route .detail-panel {
   display: none;
 }
 
-.content-grid.is-buddy {
+.content-grid.is-buddy,
+.content-grid.is-route {
   grid-template-columns: 1fr;
 }
 
 .home-panel.is-explore,
-.home-panel.is-buddy {
+.home-panel.is-buddy,
+.home-panel.is-route {
   min-height: calc(100vh - 56px - 104px);
   padding: 0;
 }
 
 .home-panel.is-explore.has-results,
-.home-panel.is-buddy.has-results {
+.home-panel.is-buddy.has-results,
+.home-panel.is-route.has-results {
   padding: 0;
 }
 
@@ -586,19 +590,30 @@ h1 {
 .home-panel.is-buddy .home-search-card,
 .home-panel.is-buddy .scene-pills,
 .home-panel.is-buddy #aiStatus,
-.home-panel.is-buddy .home-section {
+.home-panel.is-buddy .home-section,
+.home-panel.is-route .home-app-header,
+.home-panel.is-route .home-search-card,
+.home-panel.is-route .scene-pills,
+.home-panel.is-route #aiStatus,
+.home-panel.is-route .home-section {
   display: none;
 }
 
 .explore-view[hidden],
 .explore-suggestions[hidden],
 .buddy-view[hidden],
-.buddy-loader[hidden] {
+.buddy-loader[hidden],
+.route-view[hidden],
+.route-search-panel[hidden],
+.route-suggestions[hidden],
+.route-builder[hidden],
+.route-result[hidden] {
   display: none;
 }
 
 .explore-view,
-.buddy-view {
+.buddy-view,
+.route-view {
   min-height: inherit;
 }
 
@@ -615,6 +630,403 @@ h1 {
 }
 
 .buddy-shell {
+  background: #fffdfa;
+}
+
+.route-view {
+  min-height: calc(100vh - 56px - 104px);
+  padding: clamp(28px, 6vw, 56px);
+  background: #fffdfa;
+}
+
+.route-builder,
+.route-result {
+  width: min(760px, 100%);
+  margin: 0 auto;
+}
+
+.route-hero-copy h2,
+.route-result-heading h2 {
+  margin-bottom: 8px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(44px, 9vw, 72px);
+  line-height: 0.93;
+  letter-spacing: 0;
+}
+
+.route-hero-copy h2 em,
+.route-result-heading h2 em {
+  font-style: italic;
+  font-weight: 400;
+}
+
+.route-hero-copy p,
+.route-result-heading p {
+  margin-bottom: 24px;
+  color: #9a948b;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.route-section-label,
+.route-prompt-field span {
+  display: block;
+  margin: 24px 0 10px;
+  color: #aaa39a;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.route-stops {
+  display: grid;
+  gap: 10px;
+}
+
+.route-empty-stops,
+.route-stop-card,
+.route-add-button {
+  min-height: 74px;
+  border-radius: 18px;
+}
+
+.route-empty-stops {
+  display: grid;
+  place-items: center;
+  border: 1px dashed #e7ddd3;
+  color: #9a948b;
+  font-weight: 800;
+}
+
+.route-stop-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  border: 1px solid #ede7df;
+  background: #f1ede6;
+}
+
+.route-stop-card.is-accent {
+  background: #fffdfa;
+}
+
+.route-stop-index {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  color: #fff;
+  background: #1f1c18;
+  box-shadow: 0 3px 8px rgba(31, 28, 24, 0.16);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.route-stop-card.is-accent .route-stop-index,
+.route-stop-index.is-accent {
+  background: #d65300;
+}
+
+.route-stop-copy,
+.route-itinerary-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.route-stop-copy strong,
+.route-itinerary-copy strong {
+  overflow: hidden;
+  color: #1f1c18;
+  font-size: 20px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-stop-copy small,
+.route-itinerary-copy small {
+  overflow: hidden;
+  color: #9a948b;
+  font-size: 15px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-stop-card button {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  color: #8d867d;
+  background: transparent;
+  font-size: 28px;
+  font-weight: 500;
+}
+
+.route-add-wrap {
+  margin-top: 12px;
+}
+
+.route-add-button {
+  width: 100%;
+  border: 1px dashed #e7ddd3;
+  color: #9a948b;
+  background: transparent;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.route-search-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #ede7df;
+  border-radius: 22px;
+  background: #fffdfa;
+  box-shadow: 0 18px 42px rgba(31, 45, 42, 0.08);
+}
+
+.route-search-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 58px;
+  padding: 0 18px;
+  border: 1px solid #e4ded5;
+  border-radius: 18px;
+  background: #f4f0ea;
+}
+
+.route-search-field input {
+  min-width: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  outline: none;
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.route-search-status,
+.route-plan-status {
+  min-height: 20px;
+  margin: 0;
+  color: #6a766f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.route-search-status.is-error,
+.route-plan-status.is-error {
+  color: #8a4b00;
+}
+
+.route-suggestions {
+  display: grid;
+  gap: 6px;
+}
+
+.route-suggestion-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+
+.route-suggestion-button:hover,
+.route-suggestion-button:focus-visible {
+  border-color: rgba(29, 111, 95, 0.22);
+  background: #f5faf6;
+}
+
+.route-suggestion-main,
+.route-suggestion-secondary {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-suggestion-main {
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.route-suggestion-secondary {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.route-suggestion-arrow {
+  color: var(--accent-strong);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.route-prompt-field textarea {
+  width: 100%;
+  min-height: 128px;
+  resize: vertical;
+  border: 1px solid #e4ded5;
+  border-radius: 18px;
+  padding: 22px 24px;
+  color: #4b4740;
+  background: #f1ede6;
+  outline: none;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.route-prompt-field textarea:focus,
+.route-search-field:focus-within {
+  border-color: rgba(29, 111, 95, 0.55);
+  box-shadow: 0 0 0 4px rgba(29, 111, 95, 0.1);
+}
+
+.route-generate-button,
+.route-start-button,
+.route-replan-button {
+  display: inline-grid;
+  place-items: center;
+  min-height: 68px;
+  border-radius: 20px;
+  font-size: 20px;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.route-generate-button {
+  width: 100%;
+  margin-top: 12px;
+  border: 0;
+  color: #fffdfa;
+  background: #d65300;
+  box-shadow: 0 14px 32px rgba(214, 83, 0, 0.2);
+}
+
+.route-generate-button:disabled {
+  color: #aaa39a;
+  background: #ede7df;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.route-map-card {
+  overflow: hidden;
+  border: 1px solid #ede7df;
+  border-radius: 22px;
+  background:
+    linear-gradient(#e7e2d8 1px, transparent 1px),
+    linear-gradient(90deg, #e7e2d8 1px, transparent 1px),
+    #f1ede6;
+  background-size: 46px 46px;
+}
+
+.route-map {
+  width: 100%;
+  min-height: 330px;
+}
+
+.route-itinerary-card {
+  margin-top: 26px;
+  padding: 24px;
+  border: 1px solid #ede7df;
+  border-radius: 22px;
+  background: #fffdfa;
+}
+
+.route-itinerary-heading,
+.route-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.route-itinerary-heading h3 {
+  margin-bottom: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.route-itinerary-heading span {
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: #377960;
+  background: #eef6ef;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.route-itinerary {
+  margin-top: 18px;
+}
+
+.route-itinerary-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 18px;
+  padding: 16px 0;
+  border-bottom: 1px solid #f0eae2;
+}
+
+.route-itinerary-item:last-child {
+  border-bottom: 0;
+}
+
+.route-itinerary-copy em {
+  margin-top: 6px;
+  color: #6b665f;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.route-itinerary-item time {
+  color: #4b4740;
+  font-size: 16px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.route-action-row {
+  margin-top: 18px;
+}
+
+.route-start-button,
+.route-replan-button {
+  flex: 1;
+  border: 1px solid #1f1c18;
+}
+
+.route-start-button {
+  color: #fffdfa;
+  background: #1f1c18;
+}
+
+.route-replan-button {
+  color: #1f1c18;
   background: #fffdfa;
 }
 
@@ -2044,7 +2456,8 @@ h1 {
   }
 
   .home-panel.is-explore,
-  .home-panel.is-buddy {
+  .home-panel.is-buddy,
+  .home-panel.is-route {
     min-height: calc(100dvh - 32px - 96px - env(safe-area-inset-bottom));
     padding: 0;
   }
@@ -2068,6 +2481,74 @@ h1 {
 
   .explore-status {
     margin-left: 14px;
+  }
+
+  .route-view {
+    min-height: calc(100dvh - 32px - 96px - env(safe-area-inset-bottom));
+    padding: 34px 20px 24px;
+  }
+
+  .route-hero-copy h2,
+  .route-result-heading h2 {
+    font-size: 48px;
+  }
+
+  .route-hero-copy p,
+  .route-result-heading p {
+    font-size: 17px;
+  }
+
+  .route-stop-card,
+  .route-empty-stops,
+  .route-add-button {
+    min-height: 64px;
+    border-radius: 16px;
+  }
+
+  .route-stop-card {
+    gap: 12px;
+    padding: 12px 14px;
+  }
+
+  .route-stop-index {
+    width: 38px;
+    height: 38px;
+    font-size: 16px;
+  }
+
+  .route-stop-copy strong,
+  .route-itinerary-copy strong {
+    font-size: 17px;
+  }
+
+  .route-prompt-field textarea {
+    min-height: 118px;
+    padding: 18px 20px;
+    font-size: 18px;
+  }
+
+  .route-generate-button,
+  .route-start-button,
+  .route-replan-button {
+    min-height: 60px;
+    border-radius: 18px;
+    font-size: 18px;
+  }
+
+  .route-map {
+    min-height: 288px;
+  }
+
+  .route-itinerary-card {
+    padding: 18px;
+  }
+
+  .route-itinerary-heading h3 {
+    font-size: 29px;
+  }
+
+  .route-action-row {
+    gap: 10px;
   }
 
   .home-app-header h2 {

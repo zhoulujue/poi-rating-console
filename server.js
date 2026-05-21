@@ -41,6 +41,7 @@ const CACHE_MEMORY_MAX_ENTRIES = Number(process.env.POI_CACHE_MEMORY_MAX_ENTRIES
 const LEGACY_CACHE_LOAD_LIMIT_BYTES = Number(process.env.POI_LEGACY_CACHE_LOAD_LIMIT_BYTES || 50 * 1024 * 1024);
 const TRIPADVISOR_BASE = "https://api.content.tripadvisor.com/api/v1";
 const AI_SEARCH_MODEL = process.env.POI_AI_SEARCH_MODEL || "gemini-2.5-flash";
+const ROUTE_PLAN_MODEL = process.env.POI_ROUTE_PLAN_MODEL || "gemini-2.5-flash";
 const BOOKING_BASE = bookingUseSandbox
   ? "https://demandapi-sandbox.booking.com/3.1"
   : "https://demandapi.booking.com/3.1";
@@ -1985,6 +1986,256 @@ Google Search grounding is unavailable or timed out. Return a conservative answe
   }
 }
 
+function normalizeRouteStop(stop, index) {
+  return {
+    index,
+    id: normalizeAiSearchText(stop.id || stop.placeId || `${stop.name || "stop"}-${index}`),
+    name: normalizeAiSearchText(stop.name || `Stop ${index + 1}`),
+    type: normalizeAiPoiType(stop.type, "restaurant"),
+    city: normalizeAiSearchText(stop.city),
+    area: normalizeAiSearchText(stop.area || stop.address),
+    category: normalizeAiSearchText(stop.category),
+    address: normalizeAiSearchText(stop.address),
+    lat: Number(stop.lat),
+    lng: Number(stop.lng),
+  };
+}
+
+function formatRouteTime(minutesAfterStart) {
+  const baseMinutes = 19 * 60 + 30 + minutesAfterStart;
+  const hours24 = Math.floor(baseMinutes / 60) % 24;
+  const minutes = baseMinutes % 60;
+  const suffix = hours24 >= 12 ? "PM" : "AM";
+  const hours12 = hours24 % 12 || 12;
+  return `${hours12}:${String(minutes).padStart(2, "0")} ${suffix}`;
+}
+
+function buildFallbackRoutePlan(stops, prompt = "", warning = "") {
+  const lowerPrompt = prompt.toLowerCase();
+  const isEvening = /dinner|night|evening|bar|movie|cocktail|晚|夜|酒|电影/.test(lowerPrompt);
+  const stopCount = stops.length;
+  const minutes = Math.max(90, stopCount * 55 + Math.max(0, stopCount - 1) * 15);
+
+  return {
+    title: isEvening ? "Your evening, planned." : "Your route, planned.",
+    flowTitle: isEvening ? "Tonight's flow" : "Route flow",
+    summary: prompt || "A practical route using your selected stops in order.",
+    durationText: `~${Math.round((minutes / 60) * 10) / 10} hrs`,
+    distanceText: "Google Maps will calculate live distance",
+    travelMode: "walking",
+    stopOrder: stops.map((_, index) => index),
+    itinerary: stops.map((stop, index) => ({
+      stopIndex: index,
+      name: stop.name,
+      subtitle: [stop.category || (stop.type === "hotel" ? "Hotel" : "Stop"), stop.area || stop.city].filter(Boolean).join(" · "),
+      time: formatRouteTime(index * 70),
+      note:
+        index === 0
+          ? "Start here and use the first stop to set the pace."
+          : index === stops.length - 1
+            ? "End here so the route has a clear finish."
+            : "Keep this stop flexible depending on walking time and wait times.",
+    })),
+    tips: [
+      "Check live opening hours before leaving.",
+      "Use Google Maps for real-time walking, transit, or rideshare timing.",
+    ],
+    warning,
+  };
+}
+
+function normalizeRoutePlanPayload(value, stops, prompt, warning = "") {
+  const fallback = buildFallbackRoutePlan(stops, prompt, warning);
+  const plan = value && typeof value === "object" ? value : {};
+  const rawOrder = Array.isArray(plan.stopOrder) ? plan.stopOrder : fallback.stopOrder;
+  const seen = new Set();
+  const stopOrder = rawOrder
+    .map((index) => Number(index))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < stops.length && !seen.has(index) && seen.add(index));
+  const normalizedOrder = stopOrder.length >= 2 ? stopOrder : fallback.stopOrder;
+  const itinerarySource = Array.isArray(plan.itinerary) ? plan.itinerary : fallback.itinerary;
+  const itinerary = itinerarySource.slice(0, stops.length).map((item, index) => {
+    const stopIndex = Number.isInteger(Number(item?.stopIndex)) ? Number(item.stopIndex) : normalizedOrder[index] ?? index;
+    const stop = stops[stopIndex] || stops[index] || {};
+    return {
+      stopIndex,
+      name: normalizeAiSearchText(item?.name || stop.name || `Stop ${index + 1}`),
+      subtitle: normalizeAiSearchText(
+        item?.subtitle || [stop.category || (stop.type === "hotel" ? "Hotel" : "Stop"), stop.area || stop.city].filter(Boolean).join(" · "),
+      ),
+      time: normalizeAiSearchText(item?.time || formatRouteTime(index * 70)),
+      note: normalizeAiSearchText(item?.note || item?.description || ""),
+      travelToNext: normalizeAiSearchText(item?.travelToNext || ""),
+    };
+  });
+
+  return {
+    title: normalizeAiSearchText(plan.title || fallback.title),
+    flowTitle: normalizeAiSearchText(plan.flowTitle || fallback.flowTitle),
+    summary: normalizeAiSearchText(plan.summary || fallback.summary),
+    durationText: normalizeAiSearchText(plan.durationText || fallback.durationText),
+    distanceText: normalizeAiSearchText(plan.distanceText || fallback.distanceText),
+    travelMode: normalizeAiSearchText(plan.travelMode || fallback.travelMode || "walking"),
+    stopOrder: normalizedOrder,
+    itinerary: itinerary.length ? itinerary : fallback.itinerary,
+    tips: toArray(plan.tips).map(normalizeAiSearchText).filter(Boolean).slice(0, 5),
+  };
+}
+
+function getRoutePlanCacheKey(payload) {
+  return makeCacheKey({
+    kind: "route-plan",
+    prompt: normalizeLookupKey(payload.prompt),
+    city: normalizeLookupKey(payload.city),
+    stops: (payload.stops || []).map((stop) => ({
+      id: normalizeLookupKey(stop.id || stop.placeId),
+      name: normalizeLookupKey(stop.name),
+      lat: Number(stop.lat).toFixed(5),
+      lng: Number(stop.lng).toFixed(5),
+    })),
+  });
+}
+
+async function handleRoutePlan(req, res, url) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readJsonBody(req, 200000);
+  } catch (error) {
+    sendJson(res, error.message === "Invalid JSON" ? 400 : 413, { error: error.message });
+    return;
+  }
+
+  const stops = (Array.isArray(payload.stops) ? payload.stops : [])
+    .slice(0, 10)
+    .map(normalizeRouteStop)
+    .filter((stop) => stop.name);
+  const promptText = normalizeAiSearchText(payload.prompt);
+
+  if (stops.length < 2) {
+    sendJson(res, 400, { error: "At least two stops are required." });
+    return;
+  }
+
+  const cacheKey = getRoutePlanCacheKey({ ...payload, stops });
+  const forceRefresh = url.searchParams.get("refresh") === "1";
+  const cached = forceRefresh ? null : getCacheEntry(cacheKey);
+  if (cached) {
+    sendJson(res, 200, withCacheMetadata(cached.payload, {
+      status: "hit",
+      source: "route-plan",
+      updatedAt: cached.updatedAt,
+    }));
+    return;
+  }
+
+  if (!geminiApiKey) {
+    const fallbackPayload = {
+      data: buildFallbackRoutePlan(stops, promptText, "Gemini API key 未配置，已返回基础路线。"),
+      warning: "Gemini API key 未配置，已返回基础路线。",
+    };
+    const entry = writeCacheEntry(cacheKey, fallbackPayload, { source: "route-plan", model: ROUTE_PLAN_MODEL, fallback: true });
+    sendJson(res, 200, withCacheMetadata(fallbackPayload, {
+      status: "stored",
+      source: "route-plan",
+      updatedAt: entry.updatedAt,
+    }));
+    return;
+  }
+
+  const stopsText = stops
+    .map((stop, index) => {
+      const location = [stop.address, stop.area, stop.city].filter(Boolean).join(", ");
+      return `${index}. ${stop.name} | type=${stop.type} | category=${stop.category || "unknown"} | location=${location || "unknown"} | lat=${stop.lat || ""} | lng=${stop.lng || ""}`;
+    })
+    .join("\n");
+
+  const prompt = `
+You are a practical city route planner. Create a concise itinerary using the selected POI stops.
+
+Selected city/area: ${normalizeAiSearchText(payload.city) || "unknown"}
+User optional instruction: ${promptText || "none"}
+Stops, zero-based indexes:
+${stopsText}
+
+Return ONLY valid JSON in this exact shape:
+{
+  "title": "Your evening, planned.",
+  "flowTitle": "Tonight's flow",
+  "summary": "one sentence route overview",
+  "durationText": "~3.5 hrs",
+  "distanceText": "1.2 mi walking",
+  "travelMode": "walking",
+  "stopOrder": [0, 1, 2],
+  "itinerary": [
+    {
+      "stopIndex": 0,
+      "name": "POI name",
+      "subtitle": "Dinner · SoHo",
+      "time": "7:30 PM",
+      "note": "short practical note",
+      "travelToNext": "10 min walk"
+    }
+  ],
+  "tips": ["short practical tip"]
+}
+
+Rules:
+- Use only the provided stops; do not invent new stops.
+- You may reorder stops if the user's instruction implies a better flow; otherwise keep the provided order.
+- Keep times realistic. If no date/time is given, assume an evening plan starting around 7:30 PM.
+- Keep copy concise and useful for a mobile itinerary.
+- If the user writes Chinese, return Chinese notes naturally, but keep short POI names as provided.
+`;
+
+  try {
+    let modelData;
+    try {
+      modelData = await geminiGenerateRatings(prompt, false, 30000, ROUTE_PLAN_MODEL);
+    } catch (error) {
+      if (!isAbortError(error) && !isGeminiLocationUnsupported(error)) throw error;
+      modelData = await geminiGenerateRatings(
+        `${prompt}
+
+The previous request timed out or the runtime location is unsupported. Return a conservative route plan from the provided stops only.`,
+        false,
+        20000,
+        ROUTE_PLAN_MODEL,
+      );
+    }
+
+    const text = modelData.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n") || "";
+    const parsed = extractJsonObject(text);
+    const responsePayload = {
+      data: normalizeRoutePlanPayload(parsed || {}, stops, promptText, parsed ? "" : "Gemini 结果无法解析，已返回基础路线。"),
+      rawText: text,
+      warning: parsed ? undefined : "Gemini 结果无法解析，已返回基础路线。",
+    };
+    const entry = writeCacheEntry(cacheKey, responsePayload, { source: "route-plan", model: ROUTE_PLAN_MODEL });
+    sendJson(res, 200, withCacheMetadata(responsePayload, {
+      status: "stored",
+      source: "route-plan",
+      updatedAt: entry.updatedAt,
+    }));
+  } catch (error) {
+    const warning = `Route 规划失败，已返回基础路线：${error.message}`;
+    const fallbackPayload = {
+      data: buildFallbackRoutePlan(stops, promptText, warning),
+      warning,
+    };
+    const entry = writeCacheEntry(cacheKey, fallbackPayload, { source: "route-plan", model: ROUTE_PLAN_MODEL, fallback: true });
+    sendJson(res, 200, withCacheMetadata(fallbackPayload, {
+      status: "stored",
+      source: "route-plan",
+      updatedAt: entry.updatedAt,
+    }));
+  }
+}
+
 function getBravePlatformQuery(platform, query, type, city) {
   const locationHint = city ? ` ${city}` : "";
   const base = `"${query}"${locationHint}`;
@@ -2870,6 +3121,11 @@ function handleRequest(req, res) {
 
   if (url.pathname === "/api/ai-search") {
     handleAiSearch(req, res, url);
+    return;
+  }
+
+  if (url.pathname === "/api/route-plan") {
+    handleRoutePlan(req, res, url);
     return;
   }
 

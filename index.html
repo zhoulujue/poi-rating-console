@@ -169,6 +169,60 @@
               </div>
             </section>
 
+            <section class="route-view" id="routeView" hidden aria-label="Route planner">
+              <div class="route-builder" id="routeBuilder">
+                <div class="route-hero-copy">
+                  <h2>Plan a <em>route</em></h2>
+                  <p>Tell us what you want, AI builds the plan.</p>
+                </div>
+
+                <div class="route-section-label">Your Stops</div>
+                <div class="route-stops" id="routeStops"></div>
+
+                <div class="route-add-wrap">
+                  <button type="button" class="route-add-button" id="routeAddStopButton">+ Add a stop</button>
+                  <div class="route-search-panel" id="routeSearchPanel" hidden>
+                    <label class="route-search-field" aria-label="Search a stop">
+                      <span class="search-glyph" aria-hidden="true"></span>
+                      <input id="routeSearchInput" type="search" placeholder="Search Google Maps for a stop" autocomplete="off" />
+                    </label>
+                    <p class="route-search-status" id="routeSearchStatus"></p>
+                    <div class="route-suggestions" id="routeSuggestions" hidden></div>
+                  </div>
+                </div>
+
+                <label class="route-prompt-field" for="routePromptInput">
+                  <span>Or describe your plan</span>
+                  <textarea id="routePromptInput" rows="4" placeholder="dinner then a movie, somewhere in lower manhattan, budget around $100 per person"></textarea>
+                </label>
+
+                <p class="route-plan-status" id="routePlanStatus"></p>
+                <button type="button" class="route-generate-button" id="routeGenerateButton" disabled>Generate route ✦</button>
+              </div>
+
+              <div class="route-result" id="routeResult" hidden>
+                <div class="route-result-heading">
+                  <h2 id="routeResultTitle">Your route,<br /><em>planned.</em></h2>
+                  <p id="routeResultMeta"></p>
+                </div>
+                <div class="route-map-card">
+                  <div class="route-map" id="routeMap" aria-label="Generated route map"></div>
+                </div>
+                <section class="route-itinerary-card">
+                  <div class="route-itinerary-heading">
+                    <h3 id="routeFlowTitle">Tonight's flow</h3>
+                    <span>AI curated</span>
+                  </div>
+                  <div class="route-itinerary" id="routeItinerary"></div>
+                </section>
+                <p class="route-plan-status" id="routeResultStatus"></p>
+                <div class="route-action-row">
+                  <a class="route-start-button" id="routeStartButton" target="_blank" rel="noreferrer">Start route</a>
+                  <button type="button" class="route-replan-button" id="routeReplanButton">Re-plan</button>
+                </div>
+              </div>
+            </section>
+
           </section>
 
           <section class="detail-panel" aria-live="polite">

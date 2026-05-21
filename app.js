@@ -236,6 +236,17 @@ const state = {
   exploreSearchSignature: "",
   isSearchingExploreNearby: false,
   buddyFrameStatus: "idle",
+  routeStops: [],
+  routeSearchOpen: false,
+  routeSearchQuery: "",
+  routeSearchStatus: "idle",
+  routeSearchError: "",
+  routePredictions: [],
+  routePrompt: "",
+  routePlanningStatus: "idle",
+  routePlanningError: "",
+  routePlan: null,
+  routePlanWarning: "",
   aiIntent: null,
   aiCandidates: [],
   providerLookup: null,
@@ -320,6 +331,26 @@ const elements = {
   buddyFrame: document.querySelector("#buddyFrame"),
   buddyLoader: document.querySelector("#buddyLoader"),
   buddyStatus: document.querySelector("#buddyStatus"),
+  routeView: document.querySelector("#routeView"),
+  routeBuilder: document.querySelector("#routeBuilder"),
+  routeResult: document.querySelector("#routeResult"),
+  routeStops: document.querySelector("#routeStops"),
+  routeAddStopButton: document.querySelector("#routeAddStopButton"),
+  routeSearchPanel: document.querySelector("#routeSearchPanel"),
+  routeSearchInput: document.querySelector("#routeSearchInput"),
+  routeSearchStatus: document.querySelector("#routeSearchStatus"),
+  routeSuggestions: document.querySelector("#routeSuggestions"),
+  routePromptInput: document.querySelector("#routePromptInput"),
+  routeGenerateButton: document.querySelector("#routeGenerateButton"),
+  routePlanStatus: document.querySelector("#routePlanStatus"),
+  routeResultTitle: document.querySelector("#routeResultTitle"),
+  routeResultMeta: document.querySelector("#routeResultMeta"),
+  routeFlowTitle: document.querySelector("#routeFlowTitle"),
+  routeMap: document.querySelector("#routeMap"),
+  routeItinerary: document.querySelector("#routeItinerary"),
+  routeResultStatus: document.querySelector("#routeResultStatus"),
+  routeStartButton: document.querySelector("#routeStartButton"),
+  routeReplanButton: document.querySelector("#routeReplanButton"),
   nearYouCity: document.querySelector("#nearYouCity"),
   nearYouRail: document.querySelector("#nearYouRail"),
   trendingCity: document.querySelector("#trendingCity"),
@@ -345,6 +376,12 @@ let googlePlacesService = null;
 let googleAutocompleteService = null;
 let exploreMap = null;
 let exploreMarkers = [];
+let routeMap = null;
+let routeDirectionsService = null;
+let routeDirectionsRenderer = null;
+let routeMapMarkers = [];
+let routeMapPolyline = null;
+let routeMapRenderedSignature = "";
 let googleSearchTimer = null;
 let googleSearchToken = 0;
 let citySearchTimer = null;
@@ -352,6 +389,9 @@ let citySearchToken = 0;
 let exploreSearchTimer = null;
 let exploreSearchToken = 0;
 let exploreMapSearchToken = 0;
+let routeSearchTimer = null;
+let routeSearchToken = 0;
+let routePlanToken = 0;
 let googleFallbackTimer = null;
 let homeSearchToken = 0;
 let tripAdvisorSearchTimer = null;
@@ -2482,6 +2522,388 @@ function renderBuddyState() {
   }
 }
 
+function getRoutePlaceFields() {
+  return ["name", "formatted_address", "place_id", "types", "geometry", "rating", "user_ratings_total", "price_level", "photos"];
+}
+
+function getRouteStopMeta(stop) {
+  const typeLabel = stop.type === "hotel" ? "Hotel" : stop.type === "restaurant" ? "Dining" : "Stop";
+  const area = stop.area && stop.area !== "Google Places" ? stop.area : stop.city;
+  return [typeLabel, area].filter(Boolean).join(" · ");
+}
+
+function clearRouteMapOverlays() {
+  routeMapMarkers.forEach((marker) => marker.setMap(null));
+  routeMapMarkers = [];
+  if (routeMapPolyline) {
+    routeMapPolyline.setMap(null);
+    routeMapPolyline = null;
+  }
+}
+
+function invalidateRoutePlan() {
+  state.routePlan = null;
+  state.routePlanWarning = "";
+  state.routePlanningStatus = "idle";
+  state.routePlanningError = "";
+  routeMapRenderedSignature = "";
+  if (routeDirectionsRenderer) routeDirectionsRenderer.set("directions", null);
+  clearRouteMapOverlays();
+}
+
+function addRouteStop(poi) {
+  if (!poi || state.routeStops.length >= 10) return;
+  const key = poi.placeId || poi.id || `${poi.type}:${normalizeText(poi.name)}:${normalizeText(poi.city)}`;
+  const exists = state.routeStops.some((stop) => {
+    const stopKey = stop.placeId || stop.id || `${stop.type}:${normalizeText(stop.name)}:${normalizeText(stop.city)}`;
+    return stopKey === key;
+  });
+  if (exists) return;
+
+  state.routeStops = [...state.routeStops, poi].slice(0, 10);
+  state.routeSearchOpen = false;
+  state.routeSearchQuery = "";
+  state.routePredictions = [];
+  state.routeSearchStatus = "idle";
+  state.routeSearchError = "";
+  invalidateRoutePlan();
+}
+
+function removeRouteStop(index) {
+  state.routeStops = state.routeStops.filter((_, itemIndex) => itemIndex !== index);
+  invalidateRoutePlan();
+  render();
+}
+
+function getRoutePredictionParts(prediction) {
+  return getCityPredictionParts(prediction);
+}
+
+function renderRouteStops() {
+  if (!elements.routeStops) return;
+
+  if (!state.routeStops.length) {
+    elements.routeStops.innerHTML = `
+      <div class="route-empty-stops">
+        Add two or more places to generate a route.
+      </div>
+    `;
+    return;
+  }
+
+  elements.routeStops.innerHTML = state.routeStops
+    .map(
+      (stop, index) => `
+        <article class="route-stop-card ${index === 1 ? "is-accent" : ""}">
+          <span class="route-stop-index">${index + 1}</span>
+          <span class="route-stop-copy">
+            <strong>${escapeHtml(stop.name)}</strong>
+            <small>${escapeHtml(getRouteStopMeta(stop))}</small>
+          </span>
+          <button type="button" data-route-stop-remove="${index}" aria-label="Remove ${escapeHtml(stop.name)}">×</button>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderRouteSuggestions() {
+  if (!elements.routeSuggestions) return;
+  elements.routeSuggestions.hidden = !state.routePredictions.length;
+  elements.routeSuggestions.innerHTML = state.routePredictions
+    .map((prediction) => {
+      const { main, secondary } = getRoutePredictionParts(prediction);
+      return `
+        <button type="button" class="route-suggestion-button" data-route-place-id="${escapeHtml(prediction.place_id)}">
+          <span>
+            <span class="route-suggestion-main">${escapeHtml(main)}</span>
+            ${secondary ? `<span class="route-suggestion-secondary">${escapeHtml(secondary)}</span>` : ""}
+          </span>
+          <span class="route-suggestion-arrow" aria-hidden="true">→</span>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function getOrderedRouteStops() {
+  if (!state.routePlan?.stopOrder?.length) return state.routeStops;
+  const used = new Set();
+  const ordered = [];
+  state.routePlan.stopOrder.forEach((value) => {
+    const index = Number(value);
+    if (!Number.isInteger(index) || index < 0 || index >= state.routeStops.length || used.has(index)) return;
+    used.add(index);
+    ordered.push(state.routeStops[index]);
+  });
+  return ordered.length >= 2 ? ordered : state.routeStops;
+}
+
+function getRouteMapSignature() {
+  return JSON.stringify(
+    getOrderedRouteStops().map((stop) => ({
+      id: stop.placeId || stop.id || stop.name,
+      lat: stop.lat,
+      lng: stop.lng,
+    })),
+  );
+}
+
+function ensureRouteMap() {
+  if (state.activeTab !== "route" || !state.routePlan || !elements.routeMap || !window.google?.maps) return null;
+  const stops = getOrderedRouteStops().filter((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.lng));
+  const center = stops[0] ? { lat: stops[0].lat, lng: stops[0].lng } : getExploreCenter();
+
+  if (!routeMap) {
+    routeMap = new google.maps.Map(elements.routeMap, {
+      center,
+      zoom: 13,
+      mapTypeControl: false,
+      streetViewControl: false,
+      fullscreenControl: false,
+      gestureHandling: "cooperative",
+    });
+    routeDirectionsService = new google.maps.DirectionsService();
+    routeDirectionsRenderer = new google.maps.DirectionsRenderer({
+      map: routeMap,
+      suppressMarkers: true,
+      preserveViewport: false,
+      polylineOptions: {
+        strokeColor: "#1f1c18",
+        strokeOpacity: 0.84,
+        strokeWeight: 4,
+      },
+    });
+  } else {
+    google.maps.event.trigger(routeMap, "resize");
+    routeMap.setCenter(center);
+  }
+
+  return routeMap;
+}
+
+function renderRouteMapMarkers(stops) {
+  clearRouteMapOverlays();
+  stops.forEach((stop, index) => {
+    if (!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) return;
+    const isAccent = index === 1;
+    const marker = new google.maps.Marker({
+      map: routeMap,
+      position: { lat: stop.lat, lng: stop.lng },
+      title: stop.name,
+      label: {
+        text: String(index + 1),
+        color: "#fff",
+        fontWeight: "900",
+        fontSize: "13px",
+      },
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 16,
+        fillColor: isAccent ? "#d65300" : "#1f1c18",
+        fillOpacity: 1,
+        strokeColor: "#fffdfa",
+        strokeWeight: 3,
+      },
+      zIndex: 40 + index,
+    });
+    routeMapMarkers.push(marker);
+  });
+}
+
+function renderRouteFallbackPolyline(stops) {
+  const path = stops
+    .filter((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.lng))
+    .map((stop) => ({ lat: stop.lat, lng: stop.lng }));
+  if (path.length < 2) return;
+  routeMapPolyline = new google.maps.Polyline({
+    map: routeMap,
+    path,
+    strokeColor: "#1f1c18",
+    strokeOpacity: 0.72,
+    strokeWeight: 4,
+    icons: [
+      {
+        icon: {
+          path: "M 0,-1 0,1",
+          strokeOpacity: 1,
+          scale: 4,
+        },
+        offset: "0",
+        repeat: "18px",
+      },
+    ],
+  });
+  const bounds = new google.maps.LatLngBounds();
+  path.forEach((point) => bounds.extend(point));
+  routeMap.fitBounds(bounds, 42);
+}
+
+function prepareRouteMap() {
+  if (state.activeTab !== "route" || !state.routePlan) return;
+  const map = ensureRouteMap();
+  if (!map || !routeDirectionsService || !routeDirectionsRenderer) return;
+
+  const stops = getOrderedRouteStops().filter((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.lng));
+  if (stops.length < 2) return;
+
+  const signature = getRouteMapSignature();
+  if (routeMapRenderedSignature === signature) return;
+  routeMapRenderedSignature = signature;
+
+  const origin = { lat: stops[0].lat, lng: stops[0].lng };
+  const destinationStop = stops.at(-1);
+  const destination = { lat: destinationStop.lat, lng: destinationStop.lng };
+  const waypoints = stops.slice(1, -1).map((stop) => ({
+    location: { lat: stop.lat, lng: stop.lng },
+    stopover: true,
+  }));
+
+  routeDirectionsService.route(
+    {
+      origin,
+      destination,
+      waypoints,
+      travelMode: google.maps.TravelMode.WALKING,
+      optimizeWaypoints: false,
+    },
+    (result, status) => {
+      if (status === google.maps.DirectionsStatus.OK && result) {
+        routeDirectionsRenderer.setDirections(result);
+        renderRouteMapMarkers(stops);
+      } else {
+        routeDirectionsRenderer.set("directions", null);
+        renderRouteMapMarkers(stops);
+        renderRouteFallbackPolyline(stops);
+      }
+    },
+  );
+}
+
+function getRouteStartUrl() {
+  const stops = getOrderedRouteStops();
+  if (stops.length < 2) return "#";
+  const destination = stops.at(-1);
+  const waypoints = stops.slice(1, -1);
+  const params = new URLSearchParams({
+    api: "1",
+    origin: stops[0].placeId ? `place_id:${stops[0].placeId}` : `${stops[0].lat},${stops[0].lng}`,
+    destination: destination.placeId ? `place_id:${destination.placeId}` : `${destination.lat},${destination.lng}`,
+    travelmode: "walking",
+  });
+  if (waypoints.length) {
+    params.set(
+      "waypoints",
+      waypoints.map((stop) => (stop.placeId ? `place_id:${stop.placeId}` : `${stop.lat},${stop.lng}`)).join("|"),
+    );
+  }
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+function renderRoutePlan() {
+  const plan = state.routePlan;
+  if (!plan) return;
+  if (elements.routeResultTitle) {
+    const title = plan.title || "Your route, planned.";
+    const parts = title.split(/,\s*/);
+    elements.routeResultTitle.innerHTML =
+      parts.length >= 2
+        ? `${escapeHtml(parts[0])},<br /><em>${escapeHtml(parts.slice(1).join(", "))}</em>`
+        : escapeHtml(title);
+  }
+  if (elements.routeResultMeta) {
+    const metaParts = [
+      `${state.routeStops.length} stops`,
+      plan.durationText,
+      plan.distanceText,
+    ].filter(Boolean);
+    elements.routeResultMeta.textContent = metaParts.join(" · ");
+  }
+  if (elements.routeFlowTitle) {
+    elements.routeFlowTitle.textContent = plan.flowTitle || "Tonight's flow";
+  }
+  if (elements.routeItinerary) {
+    const itinerary = Array.isArray(plan.itinerary) ? plan.itinerary : [];
+    elements.routeItinerary.innerHTML = itinerary
+      .map((item, index) => {
+        const stop = state.routeStops[item.stopIndex] || state.routeStops[index] || {};
+        return `
+          <article class="route-itinerary-item">
+            <span class="route-stop-index ${index === 1 ? "is-accent" : ""}">${index + 1}</span>
+            <span class="route-itinerary-copy">
+              <strong>${escapeHtml(item.name || stop.name || `Stop ${index + 1}`)}</strong>
+              <small>${escapeHtml(item.subtitle || item.description || getRouteStopMeta(stop))}</small>
+              ${item.note ? `<em>${escapeHtml(item.note)}</em>` : ""}
+            </span>
+            <time>${escapeHtml(item.time || "")}</time>
+          </article>
+        `;
+      })
+      .join("");
+  }
+  if (elements.routeResultStatus) {
+    elements.routeResultStatus.textContent = state.routePlanWarning || "";
+    elements.routeResultStatus.classList.toggle("is-error", Boolean(state.routePlanWarning));
+  }
+  if (elements.routeStartButton) {
+    elements.routeStartButton.href = getRouteStartUrl();
+  }
+}
+
+function renderRouteState() {
+  const active = state.activeTab === "route";
+  elements.homeView?.classList.toggle("is-route", active);
+  elements.routeView.hidden = !active;
+  elements.contentGrid?.classList.toggle("is-route", active);
+  elements.mobileTabbar?.querySelectorAll("button[data-home-nav]").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.homeNav === state.activeTab);
+  });
+
+  if (!active) return;
+
+  const showingResult = Boolean(state.routePlan);
+  if (elements.routeBuilder) elements.routeBuilder.hidden = showingResult;
+  if (elements.routeResult) elements.routeResult.hidden = !showingResult;
+  if (elements.routeSearchPanel) elements.routeSearchPanel.hidden = !state.routeSearchOpen;
+  if (elements.routeAddStopButton) {
+    elements.routeAddStopButton.hidden = state.routeSearchOpen || state.routeStops.length >= 10;
+  }
+  if (elements.routeSearchInput && document.activeElement !== elements.routeSearchInput) {
+    elements.routeSearchInput.value = state.routeSearchQuery;
+  }
+  if (elements.routePromptInput && document.activeElement !== elements.routePromptInput) {
+    elements.routePromptInput.value = state.routePrompt;
+  }
+  if (elements.routeSearchStatus) {
+    const statusLabels = {
+      idle: state.routeStops.length >= 10 ? "最多支持 10 个 stops。" : "",
+      searching: "正在搜索 Google Maps...",
+      ready: state.routePredictions.length ? "" : "输入地点名后搜索。",
+      error: state.routeSearchError || "Google Maps 搜索暂不可用。",
+    };
+    elements.routeSearchStatus.textContent = statusLabels[state.routeSearchStatus] || "";
+    elements.routeSearchStatus.classList.toggle("is-error", state.routeSearchStatus === "error");
+  }
+  if (elements.routePlanStatus) {
+    const statusLabels = {
+      idle: state.routeStops.length < 2 ? "选择至少 2 个 stops 后可以生成路线。" : "",
+      loading: "正在让 Gemini 规划行程...",
+      error: state.routePlanningError || "路线规划暂时失败。",
+    };
+    elements.routePlanStatus.textContent = statusLabels[state.routePlanningStatus] || "";
+    elements.routePlanStatus.classList.toggle("is-error", state.routePlanningStatus === "error");
+  }
+  if (elements.routeGenerateButton) {
+    elements.routeGenerateButton.disabled = state.routeStops.length < 2 || state.routePlanningStatus === "loading";
+    elements.routeGenerateButton.textContent = state.routePlanningStatus === "loading" ? "Generating..." : "Generate route ✦";
+  }
+
+  renderRouteStops();
+  renderRouteSuggestions();
+  renderRoutePlan();
+  requestAnimationFrame(prepareRouteMap);
+}
+
 function scheduleExploreSearch() {
   clearTimeout(exploreSearchTimer);
   const query = elements.exploreSearchInput?.value.trim() || "";
@@ -2568,6 +2990,150 @@ async function selectExplorePrediction(placeId) {
     state.exploreStatus = "error";
     state.exploreError = getFriendlySearchError(error);
     render();
+  }
+}
+
+function scheduleRouteSearch() {
+  clearTimeout(routeSearchTimer);
+  const query = elements.routeSearchInput?.value.trim() || "";
+  state.routeSearchQuery = query;
+
+  if (query.length < 2) {
+    state.routePredictions = [];
+    state.routeSearchError = "";
+    state.routeSearchStatus = "idle";
+    render();
+    return;
+  }
+
+  state.routeSearchStatus = "searching";
+  state.routeSearchError = "";
+  render();
+  routeSearchTimer = setTimeout(() => searchRoutePredictions(query), 180);
+}
+
+async function searchRoutePredictions(query) {
+  const token = ++routeSearchToken;
+
+  if (!googleAutocompleteService) {
+    state.routePredictions = [];
+    state.routeSearchStatus = "error";
+    state.routeSearchError = state.googleError || "Google Maps 搜索尚未连接。";
+    render();
+    return;
+  }
+
+  try {
+    const center = getExploreCenter();
+    const { predictions, status } = await getGooglePredictions(query, {
+      types: ["establishment"],
+      location: new google.maps.LatLng(center.lat, center.lng),
+      radius: 50000,
+    });
+    if (token !== routeSearchToken) return;
+
+    if (status !== google.maps.places.PlacesServiceStatus.OK && status !== google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+      throw new Error(`Google Maps 返回 ${status}`);
+    }
+
+    state.routePredictions = (predictions || []).slice(0, 7);
+    state.routeSearchStatus = "ready";
+    state.routeSearchError = "";
+  } catch (error) {
+    if (token !== routeSearchToken) return;
+    state.routePredictions = [];
+    state.routeSearchStatus = "error";
+    state.routeSearchError = getFriendlySearchError(error);
+  } finally {
+    if (token === routeSearchToken) render();
+  }
+}
+
+async function selectRoutePrediction(placeId) {
+  if (!placeId || !googlePlacesService || state.routeStops.length >= 10) return;
+  const token = ++routeSearchToken;
+  state.routeSearchStatus = "searching";
+  state.routeSearchError = "";
+  render();
+
+  try {
+    const { place, status } = await getGooglePlaceDetails(placeId, getRoutePlaceFields());
+    if (token !== routeSearchToken) return;
+
+    if (status !== google.maps.places.PlacesServiceStatus.OK || !place) {
+      throw new Error(`Google Maps 返回 ${status}`);
+    }
+
+    addRouteStop(mapGooglePlaceToPoi(place));
+    render();
+  } catch (error) {
+    if (token !== routeSearchToken) return;
+    state.routeSearchStatus = "error";
+    state.routeSearchError = getFriendlySearchError(error);
+    render();
+  }
+}
+
+function getRoutePlanPayload() {
+  return {
+    prompt: state.routePrompt.trim(),
+    city: getExploreLocationText(),
+    stops: state.routeStops.map((stop, index) => ({
+      index,
+      id: stop.placeId || stop.id,
+      name: stop.name,
+      type: stop.type,
+      city: stop.city,
+      area: stop.area,
+      category: stop.category,
+      address: stop.formattedAddress || [stop.area, stop.city].filter(Boolean).join(", "),
+      lat: stop.lat,
+      lng: stop.lng,
+    })),
+  };
+}
+
+async function generateRoutePlan() {
+  if (state.routeStops.length < 2 || state.routePlanningStatus === "loading") return;
+
+  if (isFileRuntime()) {
+    state.routePlanningStatus = "error";
+    state.routePlanningError = "Route 需要通过本地代理访问，请运行 node server.js。";
+    render();
+    return;
+  }
+
+  const token = ++routePlanToken;
+  state.routePlanningStatus = "loading";
+  state.routePlanningError = "";
+  state.routePlanWarning = "";
+  state.routePlan = null;
+  routeMapRenderedSignature = "";
+  render();
+
+  try {
+    const response = await fetch("/api/route-plan", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(getRoutePlanPayload()),
+    });
+    const payload = await response.json();
+    if (token !== routePlanToken) return;
+    if (!response.ok) throw new Error(payload.error || `Route 返回 ${response.status}`);
+
+    state.routePlan = payload.data || null;
+    state.routePlanWarning = payload.warning || "";
+    state.routePlanningStatus = state.routePlan ? "ready" : "error";
+    state.routePlanningError = state.routePlan ? "" : "Gemini 没有返回可用行程。";
+  } catch (error) {
+    if (token !== routePlanToken) return;
+    state.routePlan = null;
+    state.routePlanningStatus = "error";
+    state.routePlanningError = getFriendlySearchError(error);
+  } finally {
+    if (token === routePlanToken) render();
   }
 }
 
@@ -2707,6 +3273,7 @@ function renderHome(pois) {
   renderHomeSearchState(pois);
   renderExploreState();
   renderBuddyState();
+  renderRouteState();
 }
 
 function render() {
@@ -2781,6 +3348,7 @@ function mapGooglePlaceToPoi(place) {
     name: place.name,
     city,
     area: addressParts[0] || "Google Places",
+    formattedAddress: place.formatted_address || "",
     category: type === "hotel" ? "Google Places 酒店结果" : "Google Places 餐饮结果",
     description: "来自 Google Places 的实时搜索结果。其他平台评分需要分别接入对应来源后展示。",
     price: place.price_level ? `${"$".repeat(place.price_level)} · Google 价格等级` : "暂无价格等级",
@@ -2881,6 +3449,9 @@ function initializePlacesService() {
   }
   if (state.activeTab === "explore") {
     requestAnimationFrame(prepareExploreMap);
+  }
+  if (state.activeTab === "route") {
+    requestAnimationFrame(prepareRouteMap);
   }
   if (state.homeSearchStatus === "idle") {
     searchGooglePlaces();
@@ -3885,6 +4456,56 @@ elements.buddyFrame?.addEventListener("error", () => {
   if (elements.buddyStatus) elements.buddyStatus.textContent = "Buddy 暂时无法加载";
 });
 
+elements.routeAddStopButton?.addEventListener("click", () => {
+  state.routeSearchOpen = true;
+  state.routeSearchStatus = state.routeSearchQuery.trim().length >= 2 ? state.routeSearchStatus : "ready";
+  render();
+  requestAnimationFrame(() => elements.routeSearchInput?.focus());
+});
+
+elements.routeSearchInput?.addEventListener("input", scheduleRouteSearch);
+
+elements.routeSearchInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    state.routeSearchOpen = false;
+    state.routeSearchQuery = "";
+    state.routePredictions = [];
+    state.routeSearchStatus = "idle";
+    elements.routeSearchInput.value = "";
+    render();
+  }
+
+  if (event.key === "Enter" && state.routePredictions[0]?.place_id) {
+    event.preventDefault();
+    selectRoutePrediction(state.routePredictions[0].place_id);
+  }
+});
+
+elements.routeSuggestions?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-route-place-id]");
+  if (!button) return;
+  selectRoutePrediction(button.dataset.routePlaceId);
+});
+
+elements.routeStops?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-route-stop-remove]");
+  if (!button) return;
+  removeRouteStop(Number(button.dataset.routeStopRemove));
+});
+
+elements.routePromptInput?.addEventListener("input", () => {
+  state.routePrompt = elements.routePromptInput.value;
+  if (state.routePlan) invalidateRoutePlan();
+  render();
+});
+
+elements.routeGenerateButton?.addEventListener("click", generateRoutePlan);
+
+elements.routeReplanButton?.addEventListener("click", () => {
+  invalidateRoutePlan();
+  render();
+});
+
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.cityPickerOpen) {
     closeCityPicker();
@@ -3983,6 +4604,17 @@ elements.mobileTabbar?.addEventListener("click", (event) => {
     state.detailPageOpen = false;
     replaceListHistoryState();
     render();
+    return;
+  }
+
+  if (button.dataset.homeNav === "route") {
+    setActiveHomeTab("route");
+    state.userSelectedPoi = false;
+    state.selectedId = null;
+    state.detailPageOpen = false;
+    replaceListHistoryState();
+    render();
+    requestAnimationFrame(prepareRouteMap);
     return;
   }
 
