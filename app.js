@@ -610,7 +610,7 @@ function sourceSummary(poi) {
       const rating = poi.ratings[source];
       return {
         source,
-        value: formatRating(rating),
+        value: rating ? formatRating(rating) : "待查询",
       };
     })
     .slice(0, 4);
