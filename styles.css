@@ -1129,16 +1129,28 @@ h1 {
   display: flex;
   align-items: center;
   gap: 18px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.me-profile-head > div {
+  max-width: 100%;
   min-width: 0;
 }
 
 .me-profile-head img {
+  flex: 0 0 auto;
   object-fit: cover;
   background: #f1ede6;
 }
 
+.me-profile-head h2 {
+  font-size: clamp(30px, 4.8vw, 46px);
+}
+
 .me-profile-head h2,
 .me-profile-head p {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1213,7 +1225,7 @@ h1 {
 
 .me-favorite-card {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr) auto;
+  grid-template-columns: 74px minmax(0, 1fr);
   align-items: center;
   gap: 14px;
   width: 100%;
@@ -1270,19 +1282,6 @@ h1 {
   color: #756f68;
   font-size: 13px;
   font-weight: 750;
-}
-
-.me-favorite-card em {
-  display: inline-grid;
-  place-items: center;
-  min-width: 44px;
-  height: 34px;
-  border-radius: 999px;
-  color: #144b55;
-  background: #e7f4f1;
-  font-style: normal;
-  font-size: 13px;
-  font-weight: 900;
 }
 
 .explore-map {
@@ -2970,6 +2969,18 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .me-profile-head {
+    gap: 14px;
+  }
+
+  .me-profile-head h2 {
+    font-size: clamp(30px, 8vw, 38px);
+  }
+
+  .me-profile-head p {
+    font-size: 14px;
+  }
+
   .me-logout-button {
     justify-self: start;
   }
@@ -2981,11 +2992,6 @@ h1 {
   .me-favorite-media {
     width: 64px;
     height: 64px;
-  }
-
-  .me-favorite-card em {
-    grid-column: 2;
-    justify-self: start;
   }
 }
 

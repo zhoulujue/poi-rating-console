@@ -3460,10 +3460,6 @@ function renderFavoriteCard(favorite) {
     ratings: favorite.ratings || {},
     tags: favorite.tags || [],
   }).map(escapeHtml).join(" · ");
-  const score = averageScore({
-    ...favorite,
-    ratings: favorite.ratings || {},
-  });
 
   return `
     <button type="button" class="me-favorite-card" data-favorite-id="${escapeHtml(favorite.favoriteKey || getFavoriteKeyForPoi(favorite))}">
@@ -3472,7 +3468,6 @@ function renderFavoriteCard(favorite) {
         <strong>${escapeHtml(favorite.name)}</strong>
         <small>${meta || escapeHtml(favorite.city || "Saved POI")}</small>
       </span>
-      <em>${score || "N/A"}</em>
     </button>
   `;
 }
