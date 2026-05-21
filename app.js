@@ -319,6 +319,8 @@ const elements = {
   homeView: document.querySelector("#homeView"),
   homeLocationButton: document.querySelector("#homeLocationButton"),
   homeLocationLabel: document.querySelector("#homeLocationLabel"),
+  homeGreetingTime: document.querySelector("#homeGreetingTime"),
+  homeGreetingName: document.querySelector("#homeGreetingName"),
   cityPickerBackdrop: document.querySelector("#cityPickerBackdrop"),
   cityPickerDialog: document.querySelector("#cityPickerDialog"),
   cityPickerClose: document.querySelector("#cityPickerClose"),
@@ -637,6 +639,31 @@ function getFriendlySearchError(error) {
     return "搜索请求暂时失败，请检查网络后重试。";
   }
   return message || "搜索暂时不可用，请稍后重试。";
+}
+
+function getTimeBasedGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 12) return "Good morning,";
+  if (hour >= 12 && hour < 18) return "Good afternoon,";
+  return "Good evening,";
+}
+
+function getGreetingDisplayName(user) {
+  if (!user) return "there";
+  const rawName = (user.name || user.email?.split("@")[0] || "").trim();
+  if (!rawName) return "there";
+  return rawName.split(/\s+/)[0] || "there";
+}
+
+function renderHomeGreeting() {
+  if (elements.homeGreetingTime) {
+    elements.homeGreetingTime.textContent = getTimeBasedGreeting();
+  }
+  if (elements.homeGreetingName) {
+    const displayName = getGreetingDisplayName(state.currentUser);
+    elements.homeGreetingName.textContent = displayName;
+    elements.homeGreetingName.title = displayName;
+  }
 }
 
 function normalizeText(value) {
@@ -3882,6 +3909,7 @@ function renderHomeSearchState(pois) {
 }
 
 function renderHome(pois) {
+  renderHomeGreeting();
   renderHomeFeeds();
   renderHomeSearchState(pois);
   renderExploreState();

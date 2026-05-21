@@ -219,6 +219,11 @@ h1 {
   margin-bottom: 28px;
 }
 
+.home-app-header > div {
+  max-width: 100%;
+  min-width: 0;
+}
+
 .home-location {
   display: inline-flex;
   align-items: center;
@@ -259,9 +264,29 @@ h1 {
 }
 
 .home-app-header h2 {
+  max-width: 100%;
   margin: 0;
   font-size: clamp(42px, 6vw, 58px);
   line-height: 0.96;
+}
+
+.home-greeting-heading em {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+}
+
+#homeGreetingName {
+  display: inline-block;
+  max-width: min(100%, 11ch);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.home-greeting-period {
+  flex: 0 0 auto;
 }
 
 .home-app-header em,
